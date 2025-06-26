@@ -6,6 +6,11 @@ from llmcompressor.modifiers.quantization import QuantizationModifier
 from llmcompressor.utils import dispatch_for_generation
 
 MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"
+MODEL_ID = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
+MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct"
+SAVE_DIR = MODEL_ID.rstrip("/").split("/")[-1] + "-NVFP4"
+SAVE_DIT = f"/data5/yliu7/HF_HOME/{SAVE_DIR}"
+print(f"Saving to {SAVE_DIT}")
 
 # Load model.
 model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto")
@@ -76,6 +81,6 @@ print("==========================================\n\n")
 
 
 # Save to disk in compressed-tensors format.
-SAVE_DIR = MODEL_ID.rstrip("/").split("/")[-1] + "-NVFP4"
+
 model.save_pretrained(SAVE_DIR, save_compressed=True)
 tokenizer.save_pretrained(SAVE_DIR)
