@@ -8,11 +8,15 @@ from llmcompressor.utils import dispatch_for_generation
 MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"
 MODEL_ID = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
 MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct"
-SAVE_DIR = MODEL_ID.rstrip("/").split("/")[-1] + "-NVFP4"
+scheme_name = "NVFP4"
+scheme_name = "MXFP4"
+
+SAVE_DIR = MODEL_ID.rstrip("/").split("/")[-1] + f"-{scheme_name}"
 SAVE_DIT = f"/data5/yliu7/HF_HOME/{SAVE_DIR}"
 print(f"Saving to {SAVE_DIT}")
 
 # Load model.
+
 model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
@@ -22,7 +26,7 @@ DATASET_SPLIT = "train_sft"
 
 # Select number of samples. 512 samples is a good place to start.
 # Increasing the number of samples can improve accuracy.
-NUM_CALIBRATION_SAMPLES = 20
+NUM_CALIBRATION_SAMPLES = 4
 MAX_SEQUENCE_LENGTH = 2048
 
 # Load dataset and preprocess.
@@ -60,7 +64,8 @@ ds = ds.map(tokenize, remove_columns=ds.column_names)
 #   * quantize the weights to fp4 with per group 16 via ptq
 #   * calibrate a global_scale for activations, which will be used to
 #       quantize activations to fp4 on the fly
-recipe = QuantizationModifier(targets="Linear", scheme="NVFP4", ignore=["lm_head"])
+
+recipe = QuantizationModifier(targets="Linear", scheme=scheme_name, ignore=["lm_head"])
 
 # Apply quantization.
 oneshot(
