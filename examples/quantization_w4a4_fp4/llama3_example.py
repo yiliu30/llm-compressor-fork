@@ -12,8 +12,8 @@ scheme_name = "NVFP4"
 scheme_name = "MXFP4"
 
 SAVE_DIR = MODEL_ID.rstrip("/").split("/")[-1] + f"-{scheme_name}"
-SAVE_DIT = f"/data5/yliu7/HF_HOME/{SAVE_DIR}"
-print(f"Saving to {SAVE_DIT}")
+SAVE_DIR = f"/data5/yliu7/HF_HOME/{SAVE_DIR}"
+print(f"Saving to {SAVE_DIR}")
 
 # Load model.
 
