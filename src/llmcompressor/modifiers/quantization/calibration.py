@@ -9,11 +9,15 @@ from compressed_tensors.quantization import (
     QuantizationStrategy,
 )
 from compressed_tensors.quantization.lifecycle.forward import forward_quantize
-from compressed_tensors.quantization.utils import is_kv_cache_quant_scheme, is_mxfp4
+from compressed_tensors.quantization.utils import (
+    is_fp4,
+    is_kv_cache_quant_scheme,
+    is_mxfp4,
+)
 from compressed_tensors.utils import align_module_device, update_parameter_data
 from loguru import logger
 from torch.nn import Module
-from compressed_tensors.quantization.utils import is_fp4, is_kv_cache_quant_scheme, is_mxfp4
+
 from llmcompressor.modifiers.quantization.cache import QuantizedKVParameterCache
 from llmcompressor.observers import Observer
 from llmcompressor.utils.helpers import getattr_chain

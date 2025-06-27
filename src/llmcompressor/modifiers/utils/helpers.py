@@ -2,9 +2,9 @@ from typing import List
 
 import torch
 from compressed_tensors.quantization import QuantizationStrategy
+from compressed_tensors.quantization.utils import is_fp4, is_mxfp4
 from compressed_tensors.utils import align_modules, update_parameter_data
 from torch.nn import Linear, Module
-from compressed_tensors.quantization.utils import is_fp4, is_mxfp4
 
 __all__ = ["update_fused_layer_weight_global_scales"]
 

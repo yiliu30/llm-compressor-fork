@@ -17,8 +17,7 @@ MODEL_ID = "/data0/deepseek-ai/DeepSeek-R1"
 MODEL_ID = "/data1/DeepSeek-R1-bf16"
 
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID, torch_dtype=torch.bfloat16, trust_remote_code=True,
-    device_map="auto"
+    MODEL_ID, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map="auto"
 )
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
@@ -67,8 +66,7 @@ ds = ds.map(tokenize, remove_columns=ds.column_names)
 from llmcompressor.modifiers.quantization import QuantizationModifier
 from llmcompressor.utils import dispatch_for_generation
 
-recipe = QuantizationModifier(targets="Linear", scheme="NVFP4", ignore=["lm_head"]
-)
+recipe = QuantizationModifier(targets="Linear", scheme="NVFP4", ignore=["lm_head"])
 
 oneshot(
     model=model,
