@@ -129,7 +129,7 @@ def update_weight_global_scale(module: Module):
         return
     weight_quant_args = getattr_chain(module, "quantization_scheme.weights")
     if is_mx(quantization_args=weight_quant_args):
-        # mxfp4 does not use global scale
+# MX schemes do not use global scale
         return
 
     call_observer(
