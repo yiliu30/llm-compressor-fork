@@ -60,12 +60,14 @@ def infer_quantization_format(
             SparsityStructure(sparsity_structure) == SparsityStructure.TWO_FOUR
         )
         is_weight_only = len(input_args) == 0 and len(weight_args) > 0
-
         if (
             weight_args[0].num_bits == 4
             and weight_args[0].type == QuantizationType.FLOAT.value
         ):
-            return CompressionFormat.nvfp4_pack_quantized
+            if weight_args[0].is_mx:
+                return CompressionFormat.mxfp4_pack_quantized
+            else:
+                return CompressionFormat.nvfp4_pack_quantized
 
         if is_weight_only:  # w4a16 and w8a16
             is_valid_pack = all(

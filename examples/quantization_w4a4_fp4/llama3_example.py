@@ -10,7 +10,7 @@ MODEL_ID = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
 # MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct"
 scheme_name = "NVFP4"
 scheme_name = "MXFP4"
-scheme_name = "MXFP8"
+# scheme_name = "MXFP8"
 # scheme_name = "FP8"
 
 SAVE_DIR = MODEL_ID.rstrip("/").split("/")[-1] + f"-{scheme_name}"
