@@ -7,9 +7,11 @@ from llmcompressor.utils import dispatch_for_generation
 
 MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"
 MODEL_ID = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
-MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct"
+# MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct"
 scheme_name = "NVFP4"
 scheme_name = "MXFP4"
+scheme_name = "MXFP8"
+# scheme_name = "FP8"
 
 SAVE_DIR = MODEL_ID.rstrip("/").split("/")[-1] + f"-{scheme_name}"
 SAVE_DIR = f"/data5/yliu7/HF_HOME/{SAVE_DIR}"
@@ -80,7 +82,7 @@ print("\n\n")
 print("========== SAMPLE GENERATION ==============")
 dispatch_for_generation(model)
 input_ids = tokenizer("Hello my name is", return_tensors="pt").input_ids.to("cuda")
-output = model.generate(input_ids, max_new_tokens=100)
+output = model.generate(input_ids, max_new_tokens=20)
 print(tokenizer.decode(output[0]))
 print("==========================================\n\n")
 

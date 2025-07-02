@@ -12,6 +12,7 @@ from compressed_tensors.quantization.lifecycle.forward import forward_quantize
 from compressed_tensors.quantization.utils import (
     is_fp4,
     is_kv_cache_quant_scheme,
+    is_mx,
     is_mxfp4,
 )
 from compressed_tensors.utils import align_module_device, update_parameter_data
@@ -142,8 +143,8 @@ def update_weight_global_scale(module: Module):
     ):
         return
     weight_quant_args = getattr_chain(module, "quantization_scheme.weights")
-    if is_mxfp4(quantization_args=weight_quant_args):
-        # mxfp4 does not use global scale
+    if is_mx(quantization_args=weight_quant_args):
+# MX schemes do not use global scale
         return
 
     call_observer(
