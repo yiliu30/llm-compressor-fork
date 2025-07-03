@@ -9,7 +9,12 @@ from compressed_tensors.quantization import (
     QuantizationStrategy,
 )
 from compressed_tensors.quantization.lifecycle.forward import forward_quantize
-from compressed_tensors.quantization.utils import is_kv_cache_quant_scheme
+from compressed_tensors.quantization.utils import (
+    is_fp4,
+    is_kv_cache_quant_scheme,
+    is_mx,
+    is_mxfp4,
+)
 from compressed_tensors.utils import align_module_device, update_parameter_data
 from loguru import logger
 from torch.nn import Module
@@ -137,6 +142,10 @@ def update_weight_global_scale(module: Module):
         != QuantizationStrategy.TENSOR_GROUP
     ):
         return
+    weight_quant_args = getattr_chain(module, "quantization_scheme.weights")
+    if is_mx(quantization_args=weight_quant_args):
+# MX schemes do not use global scale
+        return
 
     call_observer(
         module,
@@ -193,7 +202,7 @@ def calibrate_activations(module: Module, value: torch.Tensor, base_name: str):
     if quantization_args is not None:
         if quantization_args.dynamic in (True, DynamicType.LOCAL):
             calculate_qparams = False
-        if quantization_args.strategy == QuantizationStrategy.TENSOR_GROUP:
+        if is_fp4(quantization_args=quantization_args):
             calculate_gparam = True
 
     call_observer(
