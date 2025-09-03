@@ -189,7 +189,11 @@ class Oneshot:
         user_pipeline = self.dataset_args.pipeline
         modifiers = session.lifecycle.recipe.modifiers
         pipeline = CalibrationPipeline.from_modifiers(modifiers, user=user_pipeline)
-        pipeline(self.model, calibration_dataloader, self.dataset_args)
+        pipeline(
+            self.model,
+            calibration_dataloader,
+            self.dataset_args,
+        )
 
         session.finalize()
 
@@ -227,7 +231,8 @@ def oneshot(
     overwrite_cache: bool = False,
     preprocessing_num_workers: Optional[int] = None,
     min_tokens_per_module: Optional[float] = None,
-    trust_remote_code_data: bool = False,
+    calibrate_moe_context: bool = False,
+    quantization_aware_calibration: bool = True,
     # Miscellaneous arguments
     output_dir: Optional[str] = None,
     log_dir: Optional[str] = "sparse_logs",
@@ -289,8 +294,13 @@ def oneshot(
         preprocessing.
     :param min_tokens_per_module: Minimum percentage of tokens per
         module, relevant for MoE models.
-    :param trust_remote_code_data: Whether to allow for datasets defined on the Hub
-        using a dataset script.
+    :param calibrate_moe_context: If during calibration, the MoE context should be
+        enabled for the given model. This usually involves updating all MoE modules
+        in the model for the duration of calibration.
+    :param quantization_aware_calibration: Whether to enable quantization-aware
+        calibration in the sequential pipeline. When True, quantization is applied
+        during forward pass in calibration. When False, quantization is disabled
+        during forward pass in calibration. Default is set to True.
 
     # Miscellaneous arguments
     :param output_dir: Path to save the output model after calibration.
@@ -302,8 +312,9 @@ def oneshot(
     """
 
     # pass all args directly into Oneshot
-    local_args = locals()
-    local_args.pop("kwargs")
+    local_args = {
+        k: v for k, v in locals().items() if k not in ("local_args", "kwargs")
+    }
     one_shot = Oneshot(**local_args, **kwargs)
     one_shot()
 

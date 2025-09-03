@@ -18,7 +18,7 @@ The Llama 3.3 70b is larger than 80 GB, surpassing the size of 1 A100. However, 
 
 ```python
 model_id = "meta-llama/Llama-3.3-70B-Instruct"
-model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto")
+model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", device_map=None)
 ```
 
 The model is first loaded onto the `cpu`, as indicated through the use of `None` for the `device_map` argument in the `from_pretrained` method when loading the model.
@@ -37,7 +37,7 @@ During `oneshot`, only one gpu is required which will be used to onload each lay
 ```python
 dispatch_for_generation(model)
 sample = tokenizer("Hello my name is", return_tensors="pt")
-sample = {key: value.to("cuda") for key, value in sample.items()}
+sample = {key: value.to(model.device) for key, value in sample.items()}
 output = model.generate(**sample, max_new_tokens=100)
 print(tokenizer.decode(output[0]))
 ```
