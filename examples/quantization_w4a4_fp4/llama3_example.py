@@ -9,10 +9,12 @@ MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"
 MODEL_ID = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
 # MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct"
 scheme_name = "NVFP4"
-scheme_name = "MXFP4"
+
 # scheme_name = "MXFP8"
 # scheme_name = "FP8"
-
+scheme_name = "NVFPP_B32"
+# scheme_name = "MXFP4"
+# scheme_name = ""
 SAVE_DIR = MODEL_ID.rstrip("/").split("/")[-1] + f"-{scheme_name}"
 SAVE_DIR = f"/data5/yliu7/HF_HOME/{SAVE_DIR}"
 print(f"Saving to {SAVE_DIR}")
@@ -85,6 +87,7 @@ dispatch_for_generation(model)
 input_ids = tokenizer("Hello my name is", return_tensors="pt").input_ids.to(
     model.device
 )
+print(f"=========== Starting generation =================")
 output = model.generate(input_ids, max_new_tokens=10)
 
 print(tokenizer.decode(output[0]))
