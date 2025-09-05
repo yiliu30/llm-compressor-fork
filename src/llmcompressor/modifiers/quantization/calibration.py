@@ -14,6 +14,7 @@ from compressed_tensors.quantization.utils import (
     is_kv_cache_quant_scheme,
     is_mx,
     is_mxfp4,
+    use_global_scales
 )
 from compressed_tensors.utils import align_module_device, update_parameter_data
 from compressed_tensors.quantization.utils import is_kv_cache_quant_scheme
@@ -149,7 +150,10 @@ def update_weight_global_scale(module: Module):
         return
     weight_quant_args = getattr_chain(module, "quantization_scheme.weights")
     if is_mx(quantization_args=weight_quant_args):
-# MX schemes do not use global scale
+        # MX schemes do not use global scale
+        return
+    if not use_global_scales(quantization_args=weight_quant_args):
+        # global scales already in use
         return
 
     call_observer(
@@ -209,6 +213,8 @@ def calibrate_activations(module: Module, value: torch.Tensor, base_name: str):
             calculate_qparams = False
         if is_fp4(quantization_args=quantization_args):
             calculate_gparam = True
+        if not use_global_scales(quantization_args=quantization_args):
+            calculate_gparam = False
 
     call_observer(
         module=module,

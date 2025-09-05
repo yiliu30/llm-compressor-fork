@@ -2,7 +2,7 @@ from typing import List
 
 import torch
 from compressed_tensors.quantization import QuantizationStrategy
-from compressed_tensors.quantization.utils import is_fp4, is_mxfp4
+from compressed_tensors.quantization.utils import is_fp4, is_mxfp4, use_global_scales
 from compressed_tensors.utils import align_modules, update_parameter_data
 from torch.nn import Linear, Module
 
@@ -51,6 +51,8 @@ def update_fused_layer_weight_global_scales(submodule: torch.nn.Module):
             if weight_quant_args.strategy != QuantizationStrategy.TENSOR_GROUP:
                 return False
             if not is_fp4(quantization_args=weight_quant_args):
+                return False
+            if not use_global_scales(quantization_args=weight_quant_args):
                 return False
         return True
 
