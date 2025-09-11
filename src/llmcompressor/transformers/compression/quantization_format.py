@@ -9,7 +9,7 @@ from compressed_tensors.quantization import (
 )
 from compressed_tensors.quantization.utils import is_module_quantized
 from loguru import logger
-from compressed_tensors.quantization.utils.helpers import is_nvfpp_b32
+from compressed_tensors.quantization.utils.helpers import is_nvfpp_b32, is_nvfpp_b16
 
 __all__ = ["infer_and_set_per_module_quantization_format"]
 
@@ -29,6 +29,8 @@ def _get_quant_compression_format(
              return CompressionFormat.mxfp4_pack_quantized
         if is_nvfpp_b32(weight_args):
             return CompressionFormat.nvfpp_b32_pack_quantized
+        if is_nvfpp_b16(weight_args):
+            return CompressionFormat.nvfpp_b16_pack_quantized
         return CompressionFormat.nvfp4_pack_quantized
 
     if is_weight_only:  # w4a16 and w8a16
