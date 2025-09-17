@@ -8,6 +8,7 @@ from llmcompressor.modifiers.quantization import QuantizationModifier
 
 # Select model and load it.
 model_id = "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+model_id = "/models/Llama-4-Maverick-17B-128E-Instruct/"
 model = Llama4ForConditionalGeneration.from_pretrained(model_id, torch_dtype="auto")
 processor = Llama4Processor.from_pretrained(model_id)
 # We update `Llama4TextMoe` modules with custom `SequentialLlama4TextMoe`.
@@ -60,19 +61,20 @@ def data_collator(batch):
 
 
 # Configure the quantization algorithm to run.
-recipe = QuantizationModifier(
-    targets="Linear",
-    scheme="NVFP4",
-    ignore=[
-        "re:.*lm_head",
-        "re:.*self_attn",
-        "re:.*router",
-        "re:vision_model.*",
-        "re:multi_modal_projector.*",
-        "Llama4TextAttention",
-    ],
-)
+# recipe = QuantizationModifier(
+#     targets="Linear",
+#     scheme="NVFP4",
+#     ignore=[
+#         "re:.*lm_head",
+#         "re:.*self_attn",
+#         "re:.*router",
+#         "re:vision_model.*",
+#         "re:multi_modal_projector.*",
+#         "Llama4TextAttention",
+#     ],
+# )
 
+recipe = "fp8_weight_pcs_act_static_llama4.yaml"
 # Apply algorithms.
 # due to the large size of Llama4, we specify sequential targets such that
 # only one MLP is loaded into GPU memory at a time
@@ -88,6 +90,6 @@ oneshot(
 
 
 # Save to disk compressed.
-SAVE_DIR = model_id.rstrip("/").split("/")[-1] + "-NVFP4"
+SAVE_DIR = f'/data2/yiliu4/{model_id.rstrip("/").split("/")[-1]}' + "-NVFP4"
 model.save_pretrained(SAVE_DIR)
 processor.save_pretrained(SAVE_DIR)
