@@ -1,0 +1,25 @@
+quantization_stage:
+  quantization_modifiers:
+    QuantizationModifier:
+      ignore: [
+        "re:.*lm_head",
+        "re:.*self_attn",
+        "re:.*router",
+        "re:vision_model.*",
+        "re:multi_modal_projector.*",
+        "Llama4TextAttention"]
+      config_groups:
+        group_0:
+          weights:
+            num_bits: 8
+            type: "float"
+            symmetric: true
+            strategy: "channel"
+            dynamic: false
+          targets: ["Linear"]
+          input_activations:
+            num_bits: 8
+            type: "float"
+            symmetric: true
+            strategy: "tensor"
+            dynamic: false

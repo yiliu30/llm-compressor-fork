@@ -6,6 +6,8 @@ from llmcompressor.modifiers.quantization import QuantizationModifier
 from llmcompressor.utils import dispatch_for_generation
 
 MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"
+MODEL_ID = "/models/Qwen3-0.6B-Base"
+MODEL_ID = "/models/Qwen3-15B-A2B-Base/"
 
 # Load model.
 model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto")
@@ -17,7 +19,7 @@ DATASET_SPLIT = "train_sft"
 
 # Select number of samples. 512 samples is a good place to start.
 # Increasing the number of samples can improve accuracy.
-NUM_CALIBRATION_SAMPLES = 20
+NUM_CALIBRATION_SAMPLES = 512
 MAX_SEQUENCE_LENGTH = 2048
 
 # Load dataset and preprocess.
@@ -56,7 +58,7 @@ ds = ds.map(tokenize, remove_columns=ds.column_names)
 #   * calibrate a global_scale for activations, which will be used to
 #       quantize activations to fp4 on the fly
 recipe = QuantizationModifier(targets="Linear", scheme="NVFP4", ignore=["lm_head"])
-
+recipe = "fp8_weight_pcs_act_static.yaml"
 # Apply quantization.
 oneshot(
     model=model,
