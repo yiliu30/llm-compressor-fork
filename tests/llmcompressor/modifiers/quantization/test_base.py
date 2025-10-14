@@ -12,7 +12,7 @@ def q_config_kwargs(config_0, config_1):
         config_groups=dict(
             group_0=dict(
                 targets=["Linear"],
-                input_activations=dict(num_bits=8, symmetric=False, strategy="token"),
+                input_activations=dict(num_bits=8, symmetric=False, strategy="tensor"),
                 weights=dict(
                     num_bits=4,
                     symmetric=True,
@@ -23,7 +23,7 @@ def q_config_kwargs(config_0, config_1):
             ),
             group_1=dict(
                 targets=["Linear"],
-                input_activations=dict(num_bits=8, symmetric=False, strategy="token"),
+                input_activations=dict(num_bits=8, symmetric=False, strategy="tensor"),
                 weights=dict(
                     num_bits=4,
                     symmetric=True,
@@ -95,12 +95,11 @@ def test_block_strategy_parsing(block_q_config_kwargs):
 def test_actorder_resolution(
     has_actorder, actorder, q_config_kwargs, expected_0, expected_1
 ):
-    if has_actorder:
-        modifier = GPTQModifier(**q_config_kwargs, actorder=actorder)
-    else:
-        modifier = GPTQModifier(**q_config_kwargs)
-
     with pytest.raises(ValueError) if expected_0 == "error" else nullcontext():
+        if has_actorder:
+            modifier = GPTQModifier(**q_config_kwargs, actorder=actorder)
+        else:
+            modifier = GPTQModifier(**q_config_kwargs)
         resolved = modifier.resolve_quantization_config()
 
     if expected_0 != "error":
@@ -155,8 +154,8 @@ def test_config_resolution(strategies, actorder):
 )
 def test_serialize_actorder(has_actorder, actorder, exp_actorder):
     if has_actorder:
-        modifier = GPTQModifier(targets=["Linear"], actorder=actorder)
+        modifier = GPTQModifier(targets=["Linear"], scheme="W8A8", actorder=actorder)
     else:
-        modifier = GPTQModifier(targets=["Linear"])
+        modifier = GPTQModifier(targets=["Linear"], scheme="W8A8")
 
     assert modifier.model_dump()["actorder"] == exp_actorder
