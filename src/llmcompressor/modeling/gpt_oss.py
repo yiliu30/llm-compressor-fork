@@ -18,7 +18,7 @@ def convert_model_for_quantization_gptoss(model):
         experts = module.experts
         if not (hasattr(experts, "gate_up_proj") and hasattr(experts, "down_proj")):
             continue
-
+        print(f"convert {name}")
         with align_module_device(experts):
             gup = experts.gate_up_proj        # [E, H, 2I]
             dwn = experts.down_proj           # [E, I, H]
@@ -123,6 +123,9 @@ class SequentialGPTOSSMoE(nn.Module):
 
         with align_module_device(self.experts):
             for i, mlp in enumerate(self.experts):
+                # breakpoint()
+                # torch.Size([2880, 5760])
+                # 
                 update_offload_parameter(
                     mlp.gate_proj, "weight",
                     original_moe.experts.gate_up_proj[i, :, ::2].T
@@ -174,6 +177,7 @@ class SequentialGPTOSSMoE(nn.Module):
 
 
 model_id = "unsloth/gpt-oss-120b-BF16"
+model_id = "/data5/yliu7/HF_HOME/unsloth/gpt-oss-20b-BF16/"
 
 model = AutoModelForCausalLM.from_pretrained(
     model_id,
@@ -185,32 +189,83 @@ tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 
 convert_model_for_quantization_gptoss(model)
 
-# -----------------------------
-# Quantization recipe
-# -----------------------------
-recipe = QuantizationModifier(
-    targets="Linear",
-    scheme="FP8_DYNAMIC",
-    ignore=[
-        "re:.*lm_head",
-        "re:.*self_attn",
-        "re:.*attn",
-        "re:.*attention.*",
-        "re:.*router",
-    ],
-)
 
-SAVE_DIR = f"{model_id.split('/')[-1]}-FP8-Dynamic"
+# model = self
+model.eval()
+import transformers
+# assert (
+#     model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__ == "WeightFP8ActFP8StaticQuantLinear"
+# ), f"Expected WeightFP8ActFP8StaticQuantLinear, got {model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__}"
+# tokenizer = self.tokenizer
+prompt = "The future of AI is "
 
-# Oneshot quantization
-oneshot(
-    model=model,
-    tokenizer=tokenizer,
-    recipe=recipe,
-    trust_remote_code_model=True,
-    output_dir=SAVE_DIR,
-)
+# breakpoint()
 
-# Save compressed
-model.save_pretrained(SAVE_DIR, save_compressed=True)
-tokenizer.save_pretrained(SAVE_DIR)
+with torch.no_grad(), torch.device("cuda"):
+    encode = tokenizer.encode(prompt, return_tensors="pt")
+    model = model.to("cuda")
+    # output_tokens = model.generate(
+    #     encode,
+    #     max_length=100,
+    # )
+    # output = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+    # print(f"Prompt: {prompt}")
+    # print(f"Output: {output}")
+    # assert output is not None, "Output should not be None"
+
+    # exit(0)
+    
+
+    from transformers import pipeline
+    import torch
+
+    # model_id = "openai/gpt-oss-20b"
+
+    pipe = pipeline(
+        "text-generation",
+        # model=model_id,
+        model=model,
+        tokenizer=tokenizer,
+        torch_dtype="auto",
+        # device_map="auto",
+    )
+
+    messages = [
+        {"role": "user", "content": "The future of AI is ?"},
+    ]
+
+    outputs = pipe(
+        messages,
+        max_new_tokens=100,
+    )
+    print(outputs[0]["generated_text"][-1])
+
+# # -----------------------------
+# # Quantization recipe
+# # -----------------------------
+# recipe = QuantizationModifier(
+#     targets="Linear",
+#     scheme="FP8_DYNAMIC",
+#     ignore=[
+#         "re:.*lm_head",
+#         "re:.*self_attn",
+#         "re:.*attn",
+#         "re:.*attention.*",
+#         "re:.*router",
+#     ],
+# )
+
+# SAVE_DIR = f"{model_id.split('/')[-1]}-FP8-Dynamic"
+
+# # Oneshot quantization
+# oneshot(
+#     model=model,
+#     tokenizer=tokenizer,
+#     recipe=recipe,
+#     trust_remote_code_model=True,
+#     output_dir=SAVE_DIR,
+# )
+
+# # Save compressed
+# model.save_pretrained(SAVE_DIR, save_compressed=True)
+# tokenizer.save_pretrained(SAVE_DIR)

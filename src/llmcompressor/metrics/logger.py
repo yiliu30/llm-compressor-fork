@@ -24,11 +24,12 @@ from llmcompressor.metrics.utils import (
 from llmcompressor.utils import is_package_available
 
 try:
-    try:
-        from torch.utils.tensorboard import SummaryWriter
-    except (ModuleNotFoundError, ImportError):
-        from tensorboardX import SummaryWriter
+    # try:
+    #     from torch.utils.tensorboard import SummaryWriter
+    # except (ModuleNotFoundError, ImportError):
+    #     from tensorboardX import SummaryWriter
     tensorboard_import_error = None
+    SummaryWriter = None
 except Exception as tensorboard_err:
     SummaryWriter = object
     tensorboard_import_error = tensorboard_err
