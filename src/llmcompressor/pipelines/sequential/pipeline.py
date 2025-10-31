@@ -22,6 +22,12 @@ if TYPE_CHECKING:
 
 __all__ = ["SequentialPipeline"]
 
+from loguru import logger
+
+def dump_cuda_mem(msg):
+    allocated = torch.cuda.memory_allocated() / (1024 ** 3)
+    reserved = torch.cuda.memory_reserved() / (1024 ** 3)
+    logger.warning(f"[CUDA MEM DUMP] {msg} | Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB")
 
 @CalibrationPipeline.register("sequential")
 class SequentialPipeline(CalibrationPipeline):
@@ -88,6 +94,7 @@ class SequentialPipeline(CalibrationPipeline):
             activations = IntermediatesCache.from_dataloader(dataloader, model_device)
 
             for subgraph_index, subgraph in enumerate(subgraphs):
+                dump_cuda_mem(f"Start subgraph {subgraph_index}")
                 # prepare tqdm description texts
                 calib_desc = f"({subgraph_index + 1}/{num_subgraphs}): Calibrating"
                 prop_desc = f"({subgraph_index + 1}/{num_subgraphs}): Propagating"
