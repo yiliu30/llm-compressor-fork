@@ -1,5 +1,8 @@
 model_path="/data5/yliu7/tmp/Qwen2.5-0.5B-W4A16-G128"
 model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128"
+model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128-with-shuffule"
+model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128-disbale-shuffule/"
+# model_path="/data5/yliu7/meta-llama/meta-llama/Meta-Llama-3.1-8B-Instruct-AR-W4G128"
 tp_size=1
 vllm serve $model_path \
     --max-model-len 8192 \
@@ -16,6 +19,17 @@ vllm serve $model_path \
 
 
 curl -X POST http://127.0.0.1:8099/v1/completions \
+     -H "Content-Type: application/json" \
+     -d '{
+           "model": "/data5/yliu7/tmp/Qwen2.5-0.5B-W4A16-G128",
+           "prompt": "Solve the following math problem step by step: What is 25 + 37?",
+           "max_tokens": 100,
+           "temperature": 0.7,
+           "top_p": 1.0
+         }'
+
+
+curl -X POST http://127.0.0.1:8000/v1/completions \
      -H "Content-Type: application/json" \
      -d '{
            "model": "/data5/yliu7/tmp/Qwen2.5-0.5B-W4A16-G128",

@@ -30,6 +30,10 @@ model_path="/data5/yliu7/HF_HOME/unsloth-gpt-oss-20b-BF16-ar-MXFP4/"
 model_path="/data5/yliu7/HF_HOME/unsloth-gpt-oss-20b-BF16-ar-MXFP4/"
 model_path="/data5/yliu7/tmp/Qwen2.5-0.5B-W4A16-G128"
 model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128"
+model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128-with-shuffule"
+model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128-disbale-shuffule/"
+# model_path="/data5/yliu7/meta-llama/meta-llama/Meta-Llama-3.1-8B-Instruct-AR-W4G128"
+# model_path="/data5/yliu7/meta-llama/meta-llama/Meta-Llama-3.1-8B-Instruct-AR-W4G128"
 # model_path=/data5/yliu7/HF_HOME/unsloth-gpt-oss-20b-BF16-ar-MXFP4/
 # model_path=/data6/yiliu4/unsloth-gpt-oss-120b-BF16-ar-MXFP4/
 # model_path=/data5/yliu7/HF_HOME/Yi30/unsloth-gpt-oss-20b-BF16-MXFP4
@@ -57,10 +61,11 @@ port=8099
 
 # --use_cache "benchmark_logs/$EVAL_LOG_NAME" \
 
+# arc_challenge,hellaswag,lambada_openai,mmlu,truthfulqa_mc1,winogrande
 HF_ALLOW_CODE_EVAL=1 \
 lm_eval --model  local-completions  \
-    --tasks  "arc_challenge,hellaswag,lambada_openai,mmlu,truthfulqa_mc1,winogrande" \
-    --model_args model=${model_path},base_url=http://127.0.0.1:${port}/v1/completions,num_concurrent=1500,max_retries=1000,timeout=6000,max_length=${max_length},max_gen_toks=${max_gen_toks} \
+    --tasks  "mmlu" \
+    --model_args model=${model_path},base_url=http://127.0.0.1:${port}/v1/completions,num_concurrent=1500,max_retries=1000,timeout=6000,max_length=${max_length},max_gen_toks=${max_gen_toks},add_bos_token=True \
     --batch_size 128  \
     --gen_kwargs="max_gen_toks=${max_gen_toks}" \
     --confirm_run_unsafe_code \

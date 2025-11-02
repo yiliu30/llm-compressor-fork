@@ -216,16 +216,45 @@ class GPTQModifier(Modifier, QuantizationMixin):
         # add tmp name for each module for logging
         for name, mod in state.model.named_modules():
             mod._tmp_name = name
+        for name, param in state.model.named_parameters():
+            param.requires_grad_(False)
+
         return True
+
+
+    def start_calibration(self, model: torch.nn.Module):
+        """
+        Register activation calibration hooks (including kv_cache quantization) and enable quantization as we calibrate
+
+        :param model: model to prepare for calibration
+        """
+
+        from compressed_tensors.quantization import (
+            enable_quantization,
+        )
+        from llmcompressor.modifiers.quantization.calibration import (
+            apply_calibration_status,
+        )
+        for _, module in match_named_modules(model, self.resolved_targets, self.ignore):
+            # No need to register observers for auto-round
+            # self._initialize_observers(module)
+            self._calibration_hooks |= self._initialize_hooks(module)
+            apply_calibration_status(module)
+
+        model.apply(enable_quantization)  # quantize at the same time as calibrate
+
 
     def on_start(self, state: State, event: Event, **kwargs):
         self.started_ = True
 
         # register quantization calibration hooks
         # assume quantization has been initialized by this modifier or one before it
-        QuantizationMixin.start_calibration(self, state.model)
+        # Replace it with call to self.start_calibration
+        # QuantizationMixin.start_calibration(self, state.model)
+        self.start_calibration( state.model)
         # breakpoint()
         # register gptq hooks
+        # No hook required for auto-round
         added_hook = False
         # for name, module in match_named_modules(state.model, self.resolved_targets, self.ignore):
         #     if getattr_chain(module, "quantization_scheme.weights", None) is not None:
@@ -335,6 +364,8 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 enable_quanted_input=False,
                 # FIXME: batch size 1 causes error, looks like related to the input_others prepare
                 # batch_size=1 
+                enable_torch_compile=True,
+                # enable_deterministic_algorithms=True,
             )
             # block: torch.nn.Module,
             # input_ids: list[torch.Tensor],
@@ -368,6 +399,7 @@ class GPTQModifier(Modifier, QuantizationMixin):
             positional_inputs = []
             attention_mask = None
             position_ids = None
+            cache_position = None
             position_embeddings = (None, None)
             for cur_inp in cur_inputs:
                 _input_ids = cur_inp[0][0][0]
@@ -377,10 +409,13 @@ class GPTQModifier(Modifier, QuantizationMixin):
                         position_ids = val
                     elif key == "position_embeddings":
                         position_embeddings = val
+                    elif key == "cache_position":
+                        cache_position = val
             input_others["position_ids"] = position_ids
             input_others["positional_inputs"] = positional_inputs
             input_others["attention_mask"] = attention_mask
             input_others["position_embeddings"] = position_embeddings
+            input_others["cache_position"] = cache_position
             decoding_layer.tuning_device = torch.device("cuda")
             with torch.enable_grad():
                 rounder._quantize_block(
@@ -446,7 +481,6 @@ class GPTQModifier(Modifier, QuantizationMixin):
                     blocksize=self.block_size,
                     percdamp=self.dampening_frac,
                 )
-                breakpoint()
                 comp_logger.set_loss(loss)
 
             update_offload_parameter(module, "weight", quantized_weight)
