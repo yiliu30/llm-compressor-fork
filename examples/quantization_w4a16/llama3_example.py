@@ -40,9 +40,9 @@ else:
     # Increasing the number of samples can improve accuracy.
     light = {"batch_size": 8, "iters": 50, "seqlen": 2048, "nsamples": 128, "lr": 5e-3}
     light = {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 128, "lr": 5e-3}
-    
+
     light = {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 128, "lr": None}
-    light = {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 32, "lr": None}
+    # light = {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 32, "lr": None}
     NUM_CALIBRATION_SAMPLES = light["nsamples"]
     MAX_SEQUENCE_LENGTH = light["seqlen"]
 
@@ -55,12 +55,14 @@ DATASET_SPLIT = "train_sft"
 
 from auto_round.calib_dataset import get_dataloader
 
-
+from llmcompressor.args import DatasetArguments
 ds = get_dataloader(
     tokenizer=tokenizer,
     seqlen=MAX_SEQUENCE_LENGTH,
     nsamples=NUM_CALIBRATION_SAMPLES,
+    return_ds=True
 )
+# data_args = DatasetArguments(shuffle_calibration_samples=False)
 # Load dataset and preprocess.
 # ds = load_dataset(DATASET_ID, split=f"{DATASET_SPLIT}[:{NUM_CALIBRATION_SAMPLES}]")
 # ds = ds.shuffle(seed=42)
@@ -102,6 +104,9 @@ oneshot(
     recipe=recipe,
     max_seq_length=MAX_SEQUENCE_LENGTH,
     num_calibration_samples=NUM_CALIBRATION_SAMPLES,
+    # !!! shuffle_calibration_samples: True -> mmlu 0.6574
+    # !!! shuffle_calibration_samples: False -> mmlu 0.66
+    shuffle_calibration_samples=False,
 )
 
 # Confirm generations of the quantized model look sane.
@@ -116,7 +121,7 @@ print("==========================================\n\n")
 
 # Save to disk compressed.
 SAVE_DIR = model_id.rstrip("/").split("/")[-1] + "-W4A16-G128"
-SAVE_DIR = f"/data5/yliu7/tmp/" + model_id.rstrip("/").split("/")[-1] + "-W4A16-G128"
+SAVE_DIR = f"/data5/yliu7/tmp/" + model_id.rstrip("/").split("/")[-1] + "-W4A16-G128-disbale-shuffule"
 print(f"Saving quantized model to {SAVE_DIR}")
 model.save_pretrained(SAVE_DIR, save_compressed=True)
 tokenizer.save_pretrained(SAVE_DIR)
