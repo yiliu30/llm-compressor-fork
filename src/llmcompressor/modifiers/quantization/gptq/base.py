@@ -76,6 +76,31 @@ class _PretrainModelWrapper(torch.nn.Module):
         return self.model(*args, **kwargs)
 
 
+def normalize_input(cur_inputs):
+    input_ids = []
+    input_others = {}
+    positional_inputs = []
+    attention_mask = None
+    position_ids = None
+    cache_position = None
+    position_embeddings = (None, None)
+    for cur_inp in cur_inputs:
+        _input_ids = cur_inp[0][0][0]
+        input_ids.append(cur_inp[0][0][0])
+        for key, val in cur_inp[0][1].items():
+            if key == "position_ids":
+                position_ids = val
+            elif key == "position_embeddings":
+                position_embeddings = val
+            elif key == "cache_position":
+                cache_position = val
+    input_others["position_ids"] = position_ids
+    input_others["positional_inputs"] = positional_inputs
+    input_others["attention_mask"] = attention_mask
+    input_others["position_embeddings"] = position_embeddings
+    input_others["cache_position"] = cache_position
+    return input_ids, input_others
+
 class GPTQModifier(Modifier, QuantizationMixin):
     """
     Implements the GPTQ algorithm from https://arxiv.org/abs/2210.17323. This modifier
@@ -367,56 +392,33 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 enable_torch_compile=True,
                 # enable_deterministic_algorithms=True,
             )
-            # block: torch.nn.Module,
-            # input_ids: list[torch.Tensor],
-            # input_others: dict,
-            # q_input: Union[None, torch.Tensor] = None,
-            # device: Union[str, torch.device] = "cpu",
 
 
-            from auto_round.compressors.utils import set_layer_config
-            def _preprocess(self):
-                self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
-                    self.model,
-                    self.layer_config,
-                    self.scheme,
-                    self.scale_dtype,
-                    self.supported_types,
-                    self.inner_supported_types,
-                    self.quant_block_list,
-                    self.fp_layers,
-                    self.quant_lm_head,
-                    # enable_gguf_official_mixed=enable_gguf_official_mixed,
-                    is_mllm=self.mllm,
-                )
-                self.batch_dim = 0
-            _preprocess(rounder)
+            # from auto_round.compressors.utils import set_layer_config
+            # def _preprocess(self):
+            #     self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
+            #         self.model,
+            #         self.layer_config,
+            #         self.scheme,
+            #         self.scale_dtype,
+            #         self.supported_types,
+            #         self.inner_supported_types,
+            #         self.quant_block_list,
+            #         self.fp_layers,
+            #         self.quant_lm_head,
+            #         # enable_gguf_official_mixed=enable_gguf_official_mixed,
+            #         is_mllm=self.mllm,
+            #     )
+            #     self.batch_dim = 0
+            # _preprocess()
+            rounder.configure_layer_config()
+            rounder.batch_dim = 0
 
             input_name = f"model.layers.{cur_layer_idx}"
             cur_inputs = all_module_input[input_name]
-            input_ids = []
-            input_others = {}
-            positional_inputs = []
-            attention_mask = None
-            position_ids = None
-            cache_position = None
-            position_embeddings = (None, None)
-            for cur_inp in cur_inputs:
-                _input_ids = cur_inp[0][0][0]
-                input_ids.append(cur_inp[0][0][0])
-                for key, val in cur_inp[0][1].items():
-                    if key == "position_ids":
-                        position_ids = val
-                    elif key == "position_embeddings":
-                        position_embeddings = val
-                    elif key == "cache_position":
-                        cache_position = val
-            input_others["position_ids"] = position_ids
-            input_others["positional_inputs"] = positional_inputs
-            input_others["attention_mask"] = attention_mask
-            input_others["position_embeddings"] = position_embeddings
-            input_others["cache_position"] = cache_position
+            input_ids, input_others = normalize_input(cur_inputs)
             decoding_layer.tuning_device = torch.device("cuda")
+            breakpoint()
             with torch.enable_grad():
                 rounder._quantize_block(
                     block=decoding_layer,
@@ -426,8 +428,6 @@ class GPTQModifier(Modifier, QuantizationMixin):
                     device="cuda",
                 )
             logger.info(f"AutoRound completed for decoding layer {getattr(decoding_layer, '_tmp_name', '')}")
-            # decoding_layer.mlp.up_proj.weight_scale.shape
-            # decoding_layer.mlp.up_proj.weight_zero_point.shape
             logger.info(f"Weight scale shape: {decoding_layer.mlp.up_proj.weight_scale.shape}, zero point shape: {decoding_layer.mlp.up_proj.weight_zero_point.shape}")
             logger.info(f"Weight scale shape: {decoding_layer.mlp.down_proj.weight_scale.shape}, zero point shape: {decoding_layer.mlp.down_proj.weight_zero_point.shape}")
             # decoding_layer.to("cuda")
@@ -437,18 +437,14 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 if hasattr(module, "weight_scale") and hasattr(module, "weight_zero_point"):
                     logger.info(f"Updating offload parameters for module {getattr(module, '_tmp_name', '')} || {name}")
                     # weight = module.weight
-                    scale = module.scale
+                    weight_scale = module.scale
+                    weight_zero_point = module.zp
                     del module.scale
-                    # zero_point = module.weight_zero_point
-                    # offload_device = torch.device("cpu")
-                    # module.weight.data.copy_(weight.data)
-                    # module.weight_scale.data.copy_(scale.data)
-                    # module.weight_zero_point.data.copy_(zero_point.data)
-                    # update_offload_parameter(module, "weight", weight)
-                    # FIXME: yi quantize the weight based on the scale and zero_point from AutoRound
-                    update_offload_parameter(module, "weight_scale", scale)
-                    # update_offload_parameter(module, "weight_zero_point", zero_point)
-            # state.model.model.layers[0].mlp.gate_proj.weightbt
+                    del module.zp
+                    update_offload_parameter(module, "weight_scale", weight_scale)
+                    update_offload_parameter(module, "weight_zero_point", weight_zero_point)
+
+
             for module in list(self._num_samples.keys()):
                 name = self._module_names[module]
                 del self._num_samples[module]
