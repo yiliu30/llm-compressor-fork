@@ -17,7 +17,10 @@ model_id = "/data5/yliu7/HF_HOME/Qwen/Qwen2.5-0.5B"
 model_id = "/data5/yliu7/meta-llama/meta-llama/Meta-Llama-3.1-8B-Instruct"
 
 model_dir="/storage/yiliu7"
-model_id=f"{model_dir}/meta-llama/Meta-Llama-3.1-8B-Instruct"
+model_name="meta-llama/Meta-Llama-3.1-8B-Instruct"
+model_name="Qwen/Qwen2.5-0.5B/"
+
+model_id=f"{model_dir}/{model_name}"
 
 # model_id = "facebook/opt-125m"
 model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto")
