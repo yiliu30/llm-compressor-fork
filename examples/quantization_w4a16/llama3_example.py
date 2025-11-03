@@ -1,5 +1,6 @@
 import os
 _DEBUG = os.environ.get("DEBUG", "0") == "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -14,6 +15,10 @@ model_id = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct"
 model_id = "Qwen/Qwen2.5-0.5B"
 model_id = "/data5/yliu7/HF_HOME/Qwen/Qwen2.5-0.5B"
 model_id = "/data5/yliu7/meta-llama/meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+model_dir="/storage/yiliu7"
+model_id=f"{model_dir}/meta-llama/Meta-Llama-3.1-8B-Instruct"
+
 # model_id = "facebook/opt-125m"
 model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -21,16 +26,17 @@ tokenizer = AutoTokenizer.from_pretrained(model_id)
 if _DEBUG:
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
     from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
+    from transformers.models.llama.modeling_llama import LlamaForCausalLM
     import torch
 
     config = AutoConfig.from_pretrained(model_id)
     config.num_hidden_layers = 2  # Use a smaller model for testing
     # Fix configuration validation issues
-    config.layer_types = config.layer_types[: config.num_hidden_layers]
+    # config.layer_types = config.layer_types[: config.num_hidden_layers]
 
     # Load the tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    model = Qwen2ForCausalLM(config)
+    model = LlamaForCausalLM(config)
     model.to(torch.bfloat16)
     NUM_CALIBRATION_SAMPLES = 3
     MAX_SEQUENCE_LENGTH = 16
@@ -53,14 +59,13 @@ DATASET_SPLIT = "train_sft"
 
 
 
-from auto_round.calib_dataset import get_dataloader
+from auto_round.calib_dataset import get_dataset
 
 from llmcompressor.args import DatasetArguments
-ds = get_dataloader(
+ds = get_dataset(
     tokenizer=tokenizer,
     seqlen=MAX_SEQUENCE_LENGTH,
     nsamples=NUM_CALIBRATION_SAMPLES,
-    return_ds=True
 )
 # data_args = DatasetArguments(shuffle_calibration_samples=False)
 # Load dataset and preprocess.
@@ -121,7 +126,7 @@ print("==========================================\n\n")
 
 # Save to disk compressed.
 SAVE_DIR = model_id.rstrip("/").split("/")[-1] + "-W4A16-G128"
-SAVE_DIR = f"/data5/yliu7/tmp/" + model_id.rstrip("/").split("/")[-1] + "-W4A16-G128-disbale-shuffule"
+SAVE_DIR = f"{model_dir}/" + model_id.rstrip("/").split("/")[-1] + "-W4A16-G128-disbale-shuffule"
 print(f"Saving quantized model to {SAVE_DIR}")
 model.save_pretrained(SAVE_DIR, save_compressed=True)
 tokenizer.save_pretrained(SAVE_DIR)
