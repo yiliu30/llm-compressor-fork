@@ -32,6 +32,7 @@ model_path="/data5/yliu7/tmp/Qwen2.5-0.5B-W4A16-G128"
 model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128"
 model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128-with-shuffule"
 model_path="/data5/yliu7/tmp/Meta-Llama-3.1-8B-Instruct-W4A16-G128-disbale-shuffule/"
+model_path="/storage/yiliu7/Meta-Llama-3.1-8B-Instruct-W4A16-G128-disbale-shuffule"
 # model_path="/data5/yliu7/meta-llama/meta-llama/Meta-Llama-3.1-8B-Instruct-AR-W4G128"
 # model_path="/data5/yliu7/meta-llama/meta-llama/Meta-Llama-3.1-8B-Instruct-AR-W4G128"
 # model_path=/data5/yliu7/HF_HOME/unsloth-gpt-oss-20b-BF16-ar-MXFP4/
