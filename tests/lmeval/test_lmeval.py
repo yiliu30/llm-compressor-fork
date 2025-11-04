@@ -118,9 +118,6 @@ class TestLMEval:
         # Run vLLM with saved model
         self.set_up(test_data_file)
 
-        # Always evaluate base model for recovery testing
-        logger.info("================= Evaluating BASE model ======================")
-        self.base_results = self._eval_base_model()
 
         if not self.save_dir:
             self.save_dir = self.model.split("/")[1] + f"-{self.scheme}"
@@ -145,8 +142,20 @@ class TestLMEval:
         self._handle_recipe()
 
         logger.info("================= Running LM Eval on COMPRESSED model ==========")
-        self._run_lm_eval()
+        results = self._run_lm_eval()
+        print(f"Compressed model results: {results}")
+        
+        # Always evaluate base model for recovery testing
+        logger.info("================= Evaluating BASE model ======================")
+        self.base_results = self._eval_base_model()
+        print(f"Base model results: {self.base_results}")
+        
+        # Always use recovery testing
+        self._validate_recovery(results)
 
+        # If absolute metrics provided, show warnings (not failures)
+        if self.lmeval.metrics:
+            self._check_absolute_warnings(results)
         self.tear_down()
 
     @log_time
@@ -195,13 +204,9 @@ class TestLMEval:
             apply_chat_template=self.lmeval.apply_chat_template,
             batch_size=self.lmeval.batch_size,
         )
+        return results
 
-        # Always use recovery testing
-        self._validate_recovery(results)
 
-        # If absolute metrics provided, show warnings (not failures)
-        if self.lmeval.metrics:
-            self._check_absolute_warnings(results)
 
     def _validate_recovery(self, compressed_results):
         """Validate using recovery testing - compare against base model."""

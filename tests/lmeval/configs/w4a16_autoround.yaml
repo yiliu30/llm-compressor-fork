@@ -1,0 +1,11 @@
+cadence: "weekly"
+model: meta-llama/Meta-Llama-3-8B-Instruct
+scheme: W4A16_autoround
+recipe: tests/e2e/vLLM/recipes/WNA16/recipe_w4a16_autoround.yaml
+dataset_id: auto_round_align
+dataset_split: train_sft
+num_calibration_samples: 128
+lmeval:
+  metrics:
+    exact_match,flexible-extract: 0.72
+    exact_match,strict-match: 0.72

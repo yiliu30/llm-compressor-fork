@@ -46,9 +46,20 @@ def run_oneshot_for_e2e_testing(
     )
 
     if dataset_id:
-        ds = load_dataset(dataset_id, name=dataset_config, split=dataset_split)
-        ds = ds.shuffle(seed=42).select(range(num_calibration_samples))
-        ds = process_dataset(ds, processor, max_seq_length)
+        if "auto_round_align" in dataset_id:
+            from auto_round.calib_dataset import get_dataset
+            from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(model)
+
+            ds = get_dataset(
+                tokenizer=tokenizer,
+                seqlen=2048,
+                nsamples=128,
+            )
+        else:
+            ds = load_dataset(dataset_id, name=dataset_config, split=dataset_split)
+            ds = ds.shuffle(seed=42).select(range(num_calibration_samples))
+            ds = process_dataset(ds, processor, max_seq_length)
         oneshot_kwargs["dataset"] = ds
         oneshot_kwargs["max_seq_length"] = max_seq_length
         oneshot_kwargs["num_calibration_samples"] = num_calibration_samples
