@@ -10,7 +10,7 @@ from compressed_tensors.quantization import QuantizationScheme, QuantizationArgs
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 model_id = "Qwen/Qwen2.5-0.5B-Instruct"
 model_id = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
-model_id = "meta-llama/Llama-3.2-1B-Instruct/"
+model_id = "meta-llama/Llama-3.2-1B-Instruct"
 model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 
