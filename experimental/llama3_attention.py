@@ -8,6 +8,9 @@ from compressed_tensors.quantization import QuantizationScheme, QuantizationArgs
 
 # Select model and load it.
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+model_id = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
+model_id = "meta-llama/Llama-3.2-1B-Instruct/"
 model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -17,7 +20,7 @@ DATASET_SPLIT = "train_sft"
 
 # Select number of samples. 512 samples is a good place to start.
 # Increasing the number of samples can improve accuracy.
-NUM_CALIBRATION_SAMPLES = 512
+NUM_CALIBRATION_SAMPLES = 16
 MAX_SEQUENCE_LENGTH = 2048
 
 # Load dataset and preprocess.
@@ -56,7 +59,8 @@ recipe = QuantizationModifier(
         "attention": QuantizationScheme(
             targets=["LlamaAttention"],
             input_activations=QuantizationArgs(
-                num_bits=8, type="float", strategy="attn_head"
+                # num_bits=8, type="float", strategy="attn_head"
+                num_bits=8, type="float", strategy="tensor"
             ),
         )
     }
