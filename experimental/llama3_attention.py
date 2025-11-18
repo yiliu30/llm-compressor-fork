@@ -53,6 +53,12 @@ def tokenize(sample):
 
 ds = ds.map(tokenize, remove_columns=ds.column_names)
 
+
+# recipe = QuantizationModifier(
+#     targets="Linear", scheme="FP8_DYNAMIC", ignore=["lm_head"]
+# )
+
+
 # Configure the quantization algorithm to run.
 recipe = QuantizationModifier(
     config_groups={
@@ -60,9 +66,26 @@ recipe = QuantizationModifier(
             targets=["LlamaAttention"],
             input_activations=QuantizationArgs(
                 # num_bits=8, type="float", strategy="attn_head"
-                num_bits=8, type="float", strategy="tensor"
+                num_bits=8,
+                type="float",
+                strategy="tensor",
             ),
-        )
+        ),
+        "linear": QuantizationScheme(
+            targets=["Linear"],
+            weights=QuantizationArgs(
+                num_bits=8,
+                type="float",
+                strategy="tensor",
+                dynamic=False,
+            ),
+            input_activations=QuantizationArgs(
+                num_bits=8,
+                type="float",
+                strategy="tensor",
+                dynamic=False,
+            ),
+        ),
     }
 )
 
