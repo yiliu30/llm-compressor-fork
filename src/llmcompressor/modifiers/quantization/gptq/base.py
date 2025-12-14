@@ -32,6 +32,50 @@ from llmcompressor.utils.metric_logging import CompressionLogger
 __all__ = ["GPTQModifier"]
 
 
+from collections import defaultdict
+import os
+
+FALLBACK_CHANGE = os.environ.get("FALLBACK_CHANGE", "0").lower() in ("1", "true", "yes")
+_DEBUG = os.environ.get("DEBUG", "0").lower() in ("1", "true", "yes")
+
+all_module_input = defaultdict(list)
+all_module_output = defaultdict(list)
+
+
+def input_capture_hook(module, *args, **kwargs):
+    all_module_input[module._tmp_name].append((args, kwargs))
+
+
+def output_capture_hook(module, *args, **kwargs):
+    all_module_output[module._tmp_name].append((args, kwargs))
+
+
+
+
+def _is_decoding_layer(module, name):
+    return "decoderlayer" in module.__class__.__name__.lower()
+
+
+class _LLModelWrapper(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList()
+
+    def forward(self, *args, **kwargs):
+        for layer in self.layers:
+            res = layer(*args, **kwargs)
+        return res
+
+
+class _PretrainModelWrapper(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = _LLModelWrapper()
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
+
 class GPTQModifier(Modifier, QuantizationMixin):
     """
     Implements the GPTQ algorithm from https://arxiv.org/abs/2210.17323. This modifier
@@ -118,6 +162,9 @@ class GPTQModifier(Modifier, QuantizationMixin):
     _module_names: Dict[torch.nn.Module, str] = PrivateAttr(default_factory=dict)
     _hessians: Dict[torch.nn.Module, torch.Tensor] = PrivateAttr(default_factory=dict)
     _num_samples: Dict[torch.nn.Module, int] = PrivateAttr(default_factory=dict)
+    
+    _cur_layer_idx = PrivateAttr(default=0)
+    
 
     def resolve_quantization_config(self) -> QuantizationConfig:
         config = super().resolve_quantization_config()
@@ -166,34 +213,71 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 state.model, self.resolved_targets, self.ignore
             )
         }
+        # add tmp name for each module for logging
+        for name, mod in state.model.named_modules():
+            mod._tmp_name = name
+        for name, param in state.model.named_parameters():
+            param.requires_grad_(False)
 
         return True
+
+
+    def start_calibration(self, model: torch.nn.Module):
+        """
+        Register activation calibration hooks (including kv_cache quantization) and enable quantization as we calibrate
+
+        :param model: model to prepare for calibration
+        """
+
+        from compressed_tensors.quantization import (
+            enable_quantization,
+        )
+        from llmcompressor.modifiers.quantization.calibration import (
+            apply_calibration_status,
+        )
+        for _, module in match_named_modules(model, self.resolved_targets, self.ignore):
+            # No need to register observers for auto-round
+            # self._initialize_observers(module)
+            self._calibration_hooks |= self._initialize_hooks(module)
+            apply_calibration_status(module)
+
+        model.apply(enable_quantization)  # quantize at the same time as calibrate
+
 
     def on_start(self, state: State, event: Event, **kwargs):
         self.started_ = True
 
         # register quantization calibration hooks
         # assume quantization has been initialized by this modifier or one before it
-        QuantizationMixin.start_calibration(self, state.model)
-
+        # Replace it with call to self.start_calibration
+        # QuantizationMixin.start_calibration(self, state.model)
+        self.start_calibration( state.model)
+        # breakpoint()
         # register gptq hooks
+        # No hook required for auto-round
         added_hook = False
-        for _, module in match_named_modules(
-            state.model, self.resolved_targets, self.ignore
-        ):
-            if getattr_chain(module, "quantization_scheme.weights", None) is not None:
-                # HACK: previously, embeddings were not quantized because they were not
-                # accessible by the layer compressor. For now, we manually ignore it,
-                # but in the FUTURE this should be ignored by the user
-                if not isinstance(module, torch.nn.Embedding):
-                    self.register_hook(module, self.calibrate_module, "forward")
-                    added_hook = True
+        # for name, module in match_named_modules(state.model, self.resolved_targets, self.ignore):
+        #     if getattr_chain(module, "quantization_scheme.weights", None) is not None:
+        #         # HACK: previously, embeddings were not quantized because they were not
+        #         # accessible by the layer compressor. For now, we manually ignore it,
+        #         # but in the FUTURE this should be ignored by the user
+        #         if not isinstance(module, torch.nn.Embedding):
+        #             # logger.warning(f">> Registering GPTQ hook for module {getattr(module, '_tmp_name', '')} || {name}")
+        #             # self.register_hook(module, self.calibrate_module, "forward")
+        #             added_hook = True
+        # breakpoint()
+        for name, module in state.model.named_modules():
+            if _is_decoding_layer(module, name):
+                # register input/output capture hooks for decoding layers
+                logger.warning(f">> Registering input/output capture hooks for decoding layer {getattr(module, '_tmp_name', '')} || {name}")
+                module.register_forward_pre_hook(input_capture_hook, with_kwargs=True)
+                module.register_forward_hook(output_capture_hook, with_kwargs=True)
 
-        if not added_hook:
-            raise ValueError(
-                "GPTQModifier requires a weight quantization config be specified by "
-                "this modifier or a modifier preceding it"
-            )
+        # if not added_hook:
+        #     raise ValueError(
+        #         "GPTQModifier requires a weight quantization config be specified by "
+        #         "this modifier or a modifier preceding it"
+        #     )
 
     def on_event(self, state: State, event: Event, **kwargs):
         if event.type_ == EventType.CALIBRATION_EPOCH_START:
@@ -201,11 +285,17 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 self.on_start(state, None)
 
         if event.type_ == EventType.SEQUENTIAL_EPOCH_END:
-            self.compress_modules()
+            if FALLBACK_CHANGE:
+                self.compress_modules(state=state)
+            else:
+                self.autoround(state)
+
 
         if event.type_ == EventType.CALIBRATION_EPOCH_END:
-            self.compress_modules()
-
+            if FALLBACK_CHANGE:
+                self.compress_modules(state=state)
+            else:
+                pass
             if not self.ended_:
                 self.on_end(state, None)
 
@@ -224,6 +314,8 @@ class GPTQModifier(Modifier, QuantizationMixin):
         :param _output: uncompressed module output, unused
         """
         # Assume that first argument is the input
+        # breakpoint()
+        logger.info(f">>||>> Strating GPTQ calibration for module {getattr(module, '_tmp_name', '')}")
         inp = args[0]
 
         # Initialize hessian if not present
@@ -243,16 +335,140 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 self._num_samples[module],
             )
 
-    def compress_modules(self):
+    def autoround(self, state):
+        cur_layer_idx = self._cur_layer_idx
+        self._cur_layer_idx += 1
+        logger.info(f">>||>> AutoRound for decoding layer index {cur_layer_idx}")
+        if cur_layer_idx >= len(state.model.model.layers):
+            logger.info(f">>||>> All decoding layers have been processed for AutoRound.")
+            self.compress_modules(return_directly=False)
+            return
+        decoding_layer = state.model.model.layers[cur_layer_idx]
+        new_model = _PretrainModelWrapper()
+        new_model.model.layers.append(decoding_layer)
+        logger.warning(f">>||>> Strating AutoRound for decoding layer {getattr(decoding_layer, '_tmp_name', '')}")
+        param = next(decoding_layer.parameters())
+        new_model.dtype = param.dtype
+        with align_module_device(decoding_layer):
+            if _DEBUG:
+                iters = 4
+            else:
+                iters = 200
+            import auto_round
+            rounder = auto_round.AutoRound(
+                model=new_model,
+                tokenizer="",
+                scheme="W4A16",
+                # iters = 128,
+                iters = iters,
+                enable_quanted_input=False,
+                # FIXME: batch size 1 causes error, looks like related to the input_others prepare
+                # batch_size=1 
+                enable_torch_compile=True,
+                # enable_deterministic_algorithms=True,
+            )
+            # block: torch.nn.Module,
+            # input_ids: list[torch.Tensor],
+            # input_others: dict,
+            # q_input: Union[None, torch.Tensor] = None,
+            # device: Union[str, torch.device] = "cpu",
+
+
+            from auto_round.compressors.utils import set_layer_config
+            def _preprocess(self):
+                self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
+                    self.model,
+                    self.layer_config,
+                    self.scheme,
+                    self.scale_dtype,
+                    self.supported_types,
+                    self.inner_supported_types,
+                    self.quant_block_list,
+                    self.fp_layers,
+                    self.quant_lm_head,
+                    # enable_gguf_official_mixed=enable_gguf_official_mixed,
+                    is_mllm=self.mllm,
+                )
+                self.batch_dim = 0
+            _preprocess(rounder)
+
+            input_name = f"model.layers.{cur_layer_idx}"
+            cur_inputs = all_module_input[input_name]
+            input_ids = []
+            input_others = {}
+            positional_inputs = []
+            attention_mask = None
+            position_ids = None
+            cache_position = None
+            position_embeddings = (None, None)
+            for cur_inp in cur_inputs:
+                _input_ids = cur_inp[0][0][0]
+                input_ids.append(cur_inp[0][0][0])
+                for key, val in cur_inp[0][1].items():
+                    if key == "position_ids":
+                        position_ids = val
+                    elif key == "position_embeddings":
+                        position_embeddings = val
+                    elif key == "cache_position":
+                        cache_position = val
+            input_others["position_ids"] = position_ids
+            input_others["positional_inputs"] = positional_inputs
+            input_others["attention_mask"] = attention_mask
+            input_others["position_embeddings"] = position_embeddings
+            input_others["cache_position"] = cache_position
+            decoding_layer.tuning_device = torch.device("cuda")
+            with torch.enable_grad():
+                rounder._quantize_block(
+                    block=decoding_layer,
+                    input_ids=input_ids,
+                    input_others=input_others,
+                    q_input=None,
+                    device="cuda",
+                )
+            logger.info(f"AutoRound completed for decoding layer {getattr(decoding_layer, '_tmp_name', '')}")
+            # decoding_layer.mlp.up_proj.weight_scale.shape
+            # decoding_layer.mlp.up_proj.weight_zero_point.shape
+            logger.info(f"Weight scale shape: {decoding_layer.mlp.up_proj.weight_scale.shape}, zero point shape: {decoding_layer.mlp.up_proj.weight_zero_point.shape}")
+            logger.info(f"Weight scale shape: {decoding_layer.mlp.down_proj.weight_scale.shape}, zero point shape: {decoding_layer.mlp.down_proj.weight_zero_point.shape}")
+            # decoding_layer.to("cuda")
+            print(f" decoding_layer.mlp.down_proj{ decoding_layer.mlp.down_proj}")
+
+            for name, module in decoding_layer.named_modules():
+                if hasattr(module, "weight_scale") and hasattr(module, "weight_zero_point"):
+                    logger.info(f"Updating offload parameters for module {getattr(module, '_tmp_name', '')} || {name}")
+                    # weight = module.weight
+                    scale = module.scale
+                    del module.scale
+                    # zero_point = module.weight_zero_point
+                    # offload_device = torch.device("cpu")
+                    # module.weight.data.copy_(weight.data)
+                    # module.weight_scale.data.copy_(scale.data)
+                    # module.weight_zero_point.data.copy_(zero_point.data)
+                    # update_offload_parameter(module, "weight", weight)
+                    # FIXME: yi quantize the weight based on the scale and zero_point from AutoRound
+                    update_offload_parameter(module, "weight_scale", scale)
+                    # update_offload_parameter(module, "weight_zero_point", zero_point)
+            # state.model.model.layers[0].mlp.gate_proj.weightbt
+            for module in list(self._num_samples.keys()):
+                name = self._module_names[module]
+                del self._num_samples[module]
+            decoding_layer.eval()
+            all_module_input.clear()
+            all_module_output.clear()
+        # logger.info(f"state.model.model.layers[0].mlp.gate_proj.weight: {state.model.model.layers[0].mlp.gate_proj.weight.device}")
+    def compress_modules(self, return_directly=True, state=None):
         """
         Quantize modules which have been calibrated
         """
+        if not FALLBACK_CHANGE:
+            if return_directly:
+                return 
+        # logger.info(f">> Quantizing {name} using {num_samples} samples")
         for module in list(self._num_samples.keys()):
             name = self._module_names[module]
             num_samples = self._num_samples[module]
             quant_args = getattr_chain(module, "quantization_scheme.weights")
 
-            logger.info(f"Quantizing {name} using {num_samples} samples")
             with torch.no_grad(), align_module_device(
                 module
             ), self._maybe_onload_hessian(module), CompressionLogger(
