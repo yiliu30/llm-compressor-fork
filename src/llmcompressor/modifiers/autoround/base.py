@@ -114,6 +114,7 @@ class AutoRoundModifier(Modifier, QuantizationMixin):
     # private variables
     _all_module_input: Dict[str, List[Tuple]] = PrivateAttr(default_factory=dict)
     _q_input: Optional[torch.Tensor] = PrivateAttr(default=None)
+    _attention_mask_list: List[torch.Tensor] = PrivateAttr(default_factory=list)
 
     def on_initialize(self, state: State, **kwargs) -> bool:
         """
@@ -132,6 +133,11 @@ class AutoRoundModifier(Modifier, QuantizationMixin):
             param.requires_grad_(False)
 
         self.sequential_targets = self._infer_sequential_targets(state.model)
+
+        # Add attention masks from calibration data if available
+        for batch in state.data.calib:
+            if "attention_mask" in batch:
+                self._attention_mask_list.append(batch["attention_mask"])
         return True
 
     def start_calibration(self, model: torch.nn.Module):
@@ -232,7 +238,7 @@ class AutoRoundModifier(Modifier, QuantizationMixin):
             device = first_param.device
             cur_inputs = self._all_module_input[decoding_layer._tmp_name]
             decoding_layer.tuning_device = device
-
+            ar.attention_mask = self._attention_mask_list
             q_input, _ = ar.quantize_block(
                 block=decoding_layer,
                 inputs=cur_inputs,
