@@ -52,7 +52,7 @@ def tokenize(sample):
 ds = ds.map(tokenize, remove_columns=ds.column_names)
 
 # Configure the quantization algorithm to run.
-#   * quantize the weights to 4 bit with GPTQ with a group size 128
+#   * quantize the weights to 4 bit with AutoRound with a group size 128
 recipe = AutoRoundModifier(
     targets="Linear", scheme="W4A16", ignore=["lm_head"], iters=200
 )
