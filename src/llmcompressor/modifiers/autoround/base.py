@@ -23,7 +23,7 @@ from llmcompressor.modifiers.quantization.quantization import QuantizationMixin
 from llmcompressor.utils import targets_embeddings, untie_word_embeddings
 from llmcompressor.utils.pytorch import get_no_split_params
 
-__all__ = ["AutoRoundModifier"]
+__all__ = ["AutoRoundModifier", "fix_batch_if_needed"]
 
 
 class _LLModelWrapper(torch.nn.Module):
@@ -114,6 +114,7 @@ class AutoRoundModifier(Modifier, QuantizationMixin):
     # private variables
     _all_module_input: Dict[str, List[Tuple]] = PrivateAttr(default_factory=dict)
     _q_input: Optional[torch.Tensor] = PrivateAttr(default=None)
+    _attention_mask_list: List[torch.Tensor] = PrivateAttr(default_factory=list)
 
     def on_initialize(self, state: State, **kwargs) -> bool:
         """
@@ -132,7 +133,16 @@ class AutoRoundModifier(Modifier, QuantizationMixin):
             param.requires_grad_(False)
 
         self.sequential_targets = self._infer_sequential_targets(state.model)
+
+        self.post_process_attention_mask_(state)
         return True
+    
+    def post_process_attention_mask_(self, state):
+        for batch in state.data.calib:
+            if "attention_mask" in batch:
+                mask = batch["attention_mask"]
+                self._attention_mask_list.append(mask)
+
 
     def start_calibration(self, model: torch.nn.Module):
         """
@@ -232,7 +242,7 @@ class AutoRoundModifier(Modifier, QuantizationMixin):
             device = first_param.device
             cur_inputs = self._all_module_input[decoding_layer._tmp_name]
             decoding_layer.tuning_device = device
-
+            ar.attention_mask = self._attention_mask_list
             q_input, _ = ar.quantize_block(
                 block=decoding_layer,
                 inputs=cur_inputs,
@@ -334,3 +344,48 @@ class AutoRoundModifier(Modifier, QuantizationMixin):
             act_bits=16,
         )
         return ar_quant_scheme
+
+
+# FIXME: refine code
+def fix_mask(mask):
+    """Fix attention mask(s): if all elements are 1, set the last element to 0.
+    Supports 1D ([seq_len]) and 2D ([batch, seq_len]) inputs.
+    """
+    if not isinstance(mask, torch.Tensor):
+        mask = torch.tensor(mask)
+
+    # Clone to avoid modifying the input in-place
+    m = mask.clone()
+
+    # Guard: empty sequences
+    if m.shape[-1] == 0:
+        return m
+
+    if m.ndim == 1:
+        if torch.all(m == 1):
+            m[-1] = 0
+            logger.warning("1D attention mask all ones -> last set to 0")
+        return m
+
+    if m.ndim == 2:
+        all_ones_rows = torch.all(m == 1, dim=1)  # [batch]
+        if torch.any(all_ones_rows):
+            # breakpoint()
+            m[all_ones_rows, -1] = 0
+            logger.warning(f"2D attention masks: {all_ones_rows.sum().item()} rows all ones -> last set to 0")
+        return m
+
+    raise ValueError(f"Unsupported mask shape: {tuple(m.shape)}")
+
+
+# --- Apply on batched dataset ---
+def fix_batch_if_needed(batch):
+    """
+    batch['attention_mask'] is List[List[int]] when batched=True.
+    Convert to tensor, fix, then convert back to list to stay compatible with datasets.
+    """
+    # breakpoint()
+    attn = torch.tensor(batch["attention_mask"])
+    attn_fixed = fix_mask(attn)
+    batch["attention_mask"] = attn_fixed.tolist()
+    return batch
