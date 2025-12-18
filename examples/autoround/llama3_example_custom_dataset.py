@@ -3,10 +3,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from llmcompressor import oneshot
 from llmcompressor.modifiers.autoround import AutoRoundModifier
+from llmcompressor.modifiers.autoround import fix_batch_if_needed
 from llmcompressor.utils import dispatch_for_generation
 
 # Select model and load it.
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+model_id = "/models/Qwen3-0.6B-Base"
 model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 tokenizer.pad_token = tokenizer.eos_token
@@ -16,7 +18,7 @@ DATASET_SPLIT = "train_sft"
 
 # Select number of samples. 512 samples is a good place to start.
 # Increasing the number of samples can improve accuracy.
-NUM_CALIBRATION_SAMPLES = 512
+NUM_CALIBRATION_SAMPLES = 128
 MAX_SEQUENCE_LENGTH = 2048
 
 # Load dataset and preprocess.
@@ -51,10 +53,16 @@ def tokenize(sample):
 
 ds = ds.map(tokenize, remove_columns=ds.column_names)
 
+
+# Use batched=True for efficiency
+ds = ds.map(fix_batch_if_needed)
+
+
+
 # Configure the quantization algorithm to run.
 #   * quantize the weights to 4 bit with AutoRound with a group size 128
 recipe = AutoRoundModifier(
-    targets="Linear", scheme="W4A16", ignore=["lm_head"], iters=200
+    targets="Linear", scheme="W4A16", ignore=["lm_head"], iters=200,
 )
 
 # Apply algorithms.
