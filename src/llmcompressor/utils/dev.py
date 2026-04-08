@@ -127,7 +127,8 @@ def patch_transformers_logger_level(level: int = logging.ERROR):
 def get_main_device() -> torch.device:
     rank = 0 if not torch.distributed.is_initialized() else torch.distributed.get_rank()
     if torch.accelerator.is_available():
-        return torch.device(torch.accelerator.current_accelerator(), rank)
+        accel_type = torch.accelerator.current_accelerator().type
+        return torch.device(accel_type, rank)
     else:
         logger.warning("No accelerator available! Compressing model on CPU instead")
         return torch.device("cpu")
