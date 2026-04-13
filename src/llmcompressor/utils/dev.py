@@ -25,6 +25,7 @@ __all__ = [
     "skip_weights_download",
     "patch_transformers_logger_level",
     "get_main_device",
+    "get_high_precision",
     "dispatch_for_generation",
 ]
 
@@ -126,12 +127,25 @@ def patch_transformers_logger_level(level: int = logging.ERROR):
 
 def get_main_device() -> torch.device:
     rank = 0 if not torch.distributed.is_initialized() else torch.distributed.get_rank()
+    is_distributed_enable = torch.distributed.is_initialized()
     if torch.accelerator.is_available():
         accel_type = torch.accelerator.current_accelerator().type
+        if accel_type == "mps" and is_distributed_enable:
+            raise RuntimeError("Parallelism has not been supported for MPS")
+
         return torch.device(accel_type, rank)
     else:
         logger.warning("No accelerator available! Compressing model on CPU instead")
         return torch.device("cpu")
+
+
+def get_high_precision() -> torch.dtype:
+    main_device = get_main_device()
+
+    if main_device.type == "mps":  # MPS does not support float64
+        return torch.float32
+
+    return torch.float64
 
 
 @deprecated("compressed_tensors.offload::dispatch_model")
