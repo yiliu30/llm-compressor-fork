@@ -1,9 +1,15 @@
 from contextlib import nullcontext
 
 import pytest
-from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
+import torch
+from compressed_tensors.quantization import (
+    QuantizationArgs,
+    QuantizationScheme,
+    ScaleCalculationMode,
+)
 
 from llmcompressor.modifiers.gptq import GPTQModifier
+from llmcompressor.modifiers.quantization import QuantizationModifier
 
 
 @pytest.fixture
@@ -211,3 +217,41 @@ def test_resolved_targets(
         )
 
         assert modifier.resolved_targets == resolved_targets
+
+
+def test_scale_calculation_mode_resolution():
+    modifier = QuantizationModifier(
+        config_groups={
+            "group_0": QuantizationScheme(
+                targets=["Linear"],
+                weights=QuantizationArgs(
+                    num_bits=4,
+                    type="float",
+                    strategy="group",
+                    group_size=32,
+                    scale_dtype=torch.uint8,
+                    zp_dtype=torch.uint8,
+                    scale_calculation_mode="rceil",
+                ),
+                input_activations=QuantizationArgs(
+                    num_bits=4,
+                    type="float",
+                    strategy="group",
+                    group_size=32,
+                    scale_dtype=torch.uint8,
+                    zp_dtype=torch.uint8,
+                    dynamic=True,
+                    scale_calculation_mode="rceil",
+                ),
+            )
+        }
+    )
+
+    resolved = modifier.resolve_quantization_config()
+    scheme = resolved.config_groups["group_0"]
+
+    assert scheme.weights.scale_calculation_mode == ScaleCalculationMode.RCEIL
+    assert (
+        scheme.input_activations.scale_calculation_mode
+        == ScaleCalculationMode.RCEIL
+    )
