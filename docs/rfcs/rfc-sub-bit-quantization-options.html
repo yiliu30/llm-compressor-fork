@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RFC: Sub-Bit Quantization Support (3/5/6/7-bit)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; color: #e2e8f0; background: #0f172a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #3b82f6; padding-bottom: 8px; color: #f1f5f9; }
+  h2 { color: #60a5fa; margin-top: 2em; border-bottom: 1px solid #1e293b; padding-bottom: 4px; }
+  h3 { color: #cbd5e1; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #334155; padding: 8px 12px; text-align: left; }
+  th { background: #1e293b; font-weight: 600; color: #f1f5f9; }
+  tr:nth-child(even) { background: #1e293b; }
+  tr:nth-child(odd) { background: #0f172a; }
+  code { background: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #93c5fd; }
+  pre { background: #020617; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; border: 1px solid #1e293b; font-size: 0.85em; }
+  strong { color: #f1f5f9; }
+  .callout { background: #1e293b; border-left: 4px solid #3b82f6; padding: 12px 16px; margin: 1em 0; border-radius: 0 8px 8px 0; }
+  .warn { border-left-color: #f59e0b; }
+  .review { background: #1e293b; border-left: 4px solid #ef4444; padding: 12px 16px; margin: 1em 0; border-radius: 0 8px 8px 0; }
+  .review.medium { border-left-color: #f59e0b; }
+  .review.low { border-left-color: #22c55e; }
+  .stage { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.8em; font-weight: bold; color: white; }
+  .s1 { background: #2563eb; }
+  .s2 { background: #7c3aed; }
+  ol li, ul li { margin: 0.4em 0; }
+  .meta { color: #94a3b8; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>RFC: Sub-Bit Quantization Support (3/5/6/7-bit)</h1>
+<p class="meta">Author: Yi Liu &nbsp;|&nbsp; Date: 2026-05-20 &nbsp;|&nbsp; Status: Draft</p>
+
+<h2>1. Summary</h2>
+<p>This RFC compares <strong>two ways</strong> to enable 3/5/6/7-bit weight quantization through <strong>llm-compressor → compressed-tensors → vLLM → humming</strong>. The core question is where to resolve the layout mismatch for odd bit-widths:</p>
+<ol>
+<li><strong>Option A:</strong> keep the current compressed-tensors packed layout and teach humming to load it correctly.</li>
+<li><strong>Option B:</strong> add a humming-aligned dense packing path in compressed-tensors for odd bit-widths and keep humming/vLLM largely unchanged.</li>
+</ol>
+<p><strong>Recommendation:</strong> choose <strong>Option B</strong>. It keeps the runtime path simpler, avoids adding new sub-bit logic in humming/vLLM, and only changes newly generated odd-bit checkpoints.</p>
+
+<h2>2. Scope</h2>
+<ul>
+<li>In scope: weight-only INT 3/5/6/7-bit checkpoints produced by <code>llm-compressor</code> / <code>compressed-tensors</code> and loaded in vLLM through the existing <code>--quantization humming</code> path.</li>
+<li>In scope: high-level repo changes and option comparison.</li>
+<li>Out of scope: a second vLLM rollout stage, generic auto-routing through vLLM's mixed-precision kernel framework, and new default kernel selection logic.</li>
+<li>Out of scope: 1-bit / 2-bit support in this RFC. 4-bit and 8-bit already work and remain unchanged.</li>
+</ul>
+
+<h2>3. Current Mismatch</h2>
+<p>For 4-bit and 8-bit, compressed-tensors and humming are effectively layout-compatible. For odd bit-widths, they are not.</p>
+
+<table>
+<tr><th></th><th>compressed-tensors today</th><th>humming expectation</th></tr>
+<tr><td><strong>Packing rule</strong></td><td><code>32 // num_bits</code> values per int32</td><td>32 values packed into <code>num_bits</code> int32 words</td></tr>
+<tr><td><strong>Bitstream</strong></td><td>Word-local, padded</td><td>Dense, crosses word boundaries</td></tr>
+<tr><td><strong>Waste</strong></td><td><code>32 % num_bits</code> bits per word for odd widths</td><td>None</td></tr>
+<tr><td><strong>3-bit example</strong></td><td><code>[N, ceil(K / 10)]</code></td><td><code>[N, K * 3 / 32]</code></td></tr>
+</table>
+
+<div class="callout">
+<strong>Key observation:</strong> 4-bit and 8-bit do not need special treatment here. The real design choice is how to handle 3/5/6/7-bit serialization and loading.
+</div>
+
+<h2>4. Packing Solutions</h2>
+
+<p>The underlying technical decision is the packing format used for odd bit-width checkpoints. The two RFC options are downstream consequences of this packing choice.</p>
+
+<table>
+<tr><th>Packing solution</th><th>Description</th><th>Implication</th></tr>
+<tr><td><strong>Padded CT packing</strong></td><td>Keep the current compressed-tensors layout, where each int32 stores <code>32 // num_bits</code> values and any remaining bits are wasted for odd widths.</td><td>humming must explicitly understand and convert this padded odd-bit layout at load time.</td></tr>
+<tr><td><strong>Dense humming-aligned packing</strong></td><td>Introduce a dense odd-bit layout for 3/5/6/7-bit weights so 32 values are stored across <code>num_bits</code> int32 words without wasted bits.</td><td>The runtime path stays simpler because the checkpoint format is already closer to humming's expectation.</td></tr>
+</table>
+
+<div class="callout">
+<strong>Important:</strong> this packing decision only matters for odd bit-widths. 4-bit and 8-bit can remain unchanged because they are already layout-compatible in practice.
+</div>
+
+<p><strong>Mapping to the RFC options:</strong></p>
+<ul>
+<li><strong>Option A</strong> corresponds to keeping the padded compressed-tensors packing and adapting humming.</li>
+<li><strong>Option B</strong> corresponds to introducing dense odd-bit packing in compressed-tensors and keeping the runtime simpler.</li>
+</ul>
+
+<h2>5. The Two Options</h2>
+
+<h3>4.1 Option A — Keep Current CT Layout, Adapt Humming</h3>
+<p>Compressed-tensors continues to emit its current padded pack-quantized format for odd bit-widths. Humming learns how to interpret that format correctly, including packed-shape inference, zero-point shape handling, and repacking to the internal MMA-friendly layout.</p>
+
+<div class="callout warn">
+<strong>Implication:</strong> the complexity stays in the runtime path. Every odd-bit checkpoint load must handle the padded compressed-tensors layout correctly.
+</div>
+
+<h3>4.2 Option B — Add Dense Odd-Bit Packing in CT, Keep Runtime Simple</h3>
+<p>Compressed-tensors adds a new dense packing path for 3/5/6/7-bit weights that matches what humming already expects. 4-bit and 8-bit remain on the existing path because they are already compatible. Humming and vLLM mostly verify behavior rather than grow new conversion logic.</p>
+
+<div class="callout">
+<strong>Implication:</strong> the complexity stays in the offline serialization path. Newly generated odd-bit checkpoints become smaller and easier for the runtime to consume.</div>
+
+<h2>6. Option Comparison</h2>
+
+<table>
+<tr><th>Dimension</th><th>Option A: Keep CT layout</th><th>Option B: Dense CT layout</th></tr>
+<tr><td><strong>Primary code change</strong></td><td>humming schema / loader / repack path</td><td>compressed-tensors packing / unpacking</td></tr>
+<tr><td><strong>Runtime complexity</strong></td><td>Higher</td><td>Lower</td></tr>
+<tr><td><strong>Offline complexity</strong></td><td>Lower</td><td>Higher</td></tr>
+<tr><td><strong>vLLM changes</strong></td><td>Verification only</td><td>Verification only</td></tr>
+<tr><td><strong>humming changes</strong></td><td>Likely required</td><td>Ideally none or minimal</td></tr>
+<tr><td><strong>compressed-tensors changes</strong></td><td>Unlock bits and presets</td><td>Unlock bits, presets, and add dense odd-bit packing</td></tr>
+<tr><td><strong>Checkpoint size</strong></td><td>Keeps padded odd-bit size</td><td>Smaller odd-bit checkpoints</td></tr>
+<tr><td><strong>Backward compatibility risk</strong></td><td>Lowest on disk format</td><td>Low, because odd-bit checkpoints do not already exist</td></tr>
+<tr><td><strong>Validation burden</strong></td><td>Higher at load time</td><td>Higher at serialization time</td></tr>
+<tr><td><strong>Recommended?</strong></td><td>No</td><td><strong>Yes</strong></td></tr>
+</table>
+
+<h2>7. High-Level Repo Changes</h2>
+
+<table>
+<tr><th>Repo</th><th>Option A</th><th>Option B</th></tr>
+<tr>
+<td><strong>compressed-tensors</strong></td>
+<td>Relax the 4/8-bit gate, add <code>W3A16/W5A16/W6A16/W7A16</code> presets, add odd-bit tests.</td>
+<td>Same as Option A, plus add dense pack/unpack for odd bit-widths and emit humming-compatible odd-bit checkpoints.</td>
+</tr>
+<tr>
+<td><strong>llm-compressor</strong></td>
+<td>Mostly no product code changes; verify GPTQ / AutoRound / RTN flows and add examples.</td>
+<td>Same as Option A.</td>
+</tr>
+<tr>
+<td><strong>humming</strong></td>
+<td>Update compressed-tensors schema loading, packed shape logic, and odd-bit conversion tests.</td>
+<td>Prefer no product changes; verify current schema/repack path against the new dense odd-bit checkpoints.</td>
+</tr>
+<tr>
+<td><strong>vLLM</strong></td>
+<td>No new integration plan in this RFC; verify the existing <code>--quantization humming</code> path works end to end.</td>
+<td>No new integration plan in this RFC; verify the existing <code>--quantization humming</code> path works end to end.</td>
+</tr>
+</table>
+
+<h2>8. Recommendation</h2>
+<p>Choose <strong>Option B</strong>.</p>
+<ul>
+<li>It keeps sub-bit-specific logic out of the serving-time critical path.</li>
+<li>It aligns newly generated odd-bit checkpoints with the format humming already wants.</li>
+<li>It avoids growing a second set of odd-bit conversion rules in humming.</li>
+<li>It does not disturb existing 4-bit / 8-bit models.</li>
+</ul>
+
+<div class="callout warn">
+<strong>Tradeoff:</strong> Option B is the better engineering path only if we are comfortable defining a new serialization behavior for newly generated 3/5/6/7-bit compressed-tensors checkpoints. If preserving the current odd-bit disk format for cross-tool compatibility is mandatory, choose Option A instead.
+</div>
+
+<h2>9. Validation</h2>
+<ol>
+<li>Compress a small model at 3-bit and 5-bit with <code>GPTQModifier</code> and <code>AutoRoundModifier</code>.</li>
+<li>Load with <code>vllm serve --quantization humming</code> and verify successful generation.</li>
+<li>Validate edge shapes, not just one clean hidden size: non-trivial packing boundaries, tensor-parallel partitions, and asymmetric zero-point cases if supported.</li>
+<li>Compare quality against 4-bit and verify no NaN / crash / shape mismatch.</li>
+</ol>
+
+<h2>10. Appendix A — Implementation Notes</h2>
+
+<h3>9.1 Config Output</h3>
+<p>Use the current serialized field name <code>quant_method</code>, not <code>quantization_method</code>.</p>
+
+<pre>
+// config.json
+{
+  "quantization_config": {
+    "quant_method": "compressed-tensors",
+    "quantization_status": "compressed",
+    "config_groups": {
+      "group_0": {
+        "weights": {
+          "num_bits": 3,
+          "type": "int",
+          "symmetric": true,
+          "strategy": "group",
+          "group_size": 128
+        },
+        "targets": ["Linear"]
+      }
+    },
+    "format": "pack-quantized"
+  }
+}
+</pre>
+
+<h3>9.2 Option A Details</h3>
+<ul>
+<li>Audit <code>humming/schema/compressed_tensors.py</code> beyond <code>convert_humming()</code>. Packed tensor shape inference and packed zero-point shapes matter too.</li>
+<li>Use ceil-div style formulas where compressed-tensors stores padded odd-bit data.</li>
+<li>Call out the current act-order limitation explicitly: compressed-tensors checkpoints with <code>actorder="group"</code> are not automatically in scope for humming today.</li>
+</ul>
+
+<h3>9.3 Option B Details</h3>
+<ul>
+<li>Add a dense odd-bit packing path in compressed-tensors for 3/5/6/7-bit weights.</li>
+<li>Keep the existing 4-bit / 8-bit packing path unchanged.</li>
+<li>Dense odd-bit packing should be paired with a matching unpack path for tests and offline inspection.</li>
+<li>If we require <code>K % 32 == 0</code> for dense packing, document that clearly and validate it early.</li>
+</ul>
+
+<h3>9.4 Illustrative Dense-Packing Sketch</h3>
+<pre>
+def pack_to_int32_dense(value: torch.Tensor, num_bits: int) -> torch.Tensor:
+    # Odd-bit path only; 4-bit and 8-bit stay on the existing implementation.
+    ...
+</pre>
+
+<h3>9.5 Suggested Presets</h3>
+<pre>
+W3A16, W5A16, W6A16, W7A16
+</pre>
+
+<h3>9.6 User Experience</h3>
+<pre>
+recipe = GPTQModifier(scheme="W3A16")
+recipe = AutoRoundModifier(scheme="W5A16")
+vllm serve ./my-model --quantization humming
+</pre>
+
+</body>
+</html>

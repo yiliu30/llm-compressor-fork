@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RFC: Sub-Bit Quantization Support (3/5/6/7-bit)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; color: #e2e8f0; background: #0f172a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #3b82f6; padding-bottom: 8px; color: #f1f5f9; }
+  h2 { color: #60a5fa; margin-top: 2em; border-bottom: 1px solid #1e293b; padding-bottom: 4px; }
+  h3 { color: #cbd5e1; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #334155; padding: 8px 12px; text-align: left; }
+  th { background: #1e293b; font-weight: 600; color: #f1f5f9; }
+  tr:nth-child(even) { background: #1e293b; }
+  tr:nth-child(odd) { background: #0f172a; }
+  code { background: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #93c5fd; }
+  pre { background: #020617; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; border: 1px solid #1e293b; font-size: 0.85em; }
+  strong { color: #f1f5f9; }
+  .callout { background: #1e293b; border-left: 4px solid #3b82f6; padding: 12px 16px; margin: 1em 0; border-radius: 0 8px 8px 0; }
+  .warn { border-left-color: #f59e0b; }
+  .review { background: #1e293b; border-left: 4px solid #ef4444; padding: 12px 16px; margin: 1em 0; border-radius: 0 8px 8px 0; }
+  .review.medium { border-left-color: #f59e0b; }
+  .review.low { border-left-color: #22c55e; }
+  .stage { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.8em; font-weight: bold; color: white; }
+  .s1 { background: #2563eb; }
+  .s2 { background: #7c3aed; }
+  ol li, ul li { margin: 0.4em 0; }
+  .meta { color: #94a3b8; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>RFC: Sub-Bit Quantization (1–8 bit) End-to-End Support</h1>
+<p class="meta">Author: Yi Liu &nbsp;|&nbsp; Date: 2026-05-20 &nbsp;|&nbsp; Status: Draft</p>
+
+<h2>1. Summary</h2>
+<p>Enable arbitrary integer bit-width (1–8) weight quantization through the full pipeline: <strong>llm-compressor → compressed-tensors → vLLM → humming kernel</strong>. Two-stage rollout: Stage 1 requires explicit <code>--quantization humming</code>; Stage 2 makes humming auto-selected for sub-bit via the standard <code>compressed-tensors</code> path.</p>
+
+<h2>2. Motivation</h2>
+<ul>
+<li>Humming kernels already support INT 1–8 bit GEMM with full MMA optimization.</li>
+<li>The upstream toolchain (compressed-tensors, llm-compressor) artificially restricts to 4/8-bit.</li>
+<li>No existing vLLM kernel (Marlin, Machete, Exllama) supports sub-bit — humming is the only option.</li>
+<li>Sub-bit (especially 3-bit) offers better accuracy/size tradeoff than 2-bit or 4-bit for many models.</li>
+</ul>
+
+<h2>3. Architecture</h2>
+<pre>
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            COMPRESSION (offline)                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  llm-compressor                                                             │
+│    QuantizationModifier(scheme="W3A16")  ──→  GPTQ at 3-bit                │
+│                                               │                             │
+│  compressed-tensors                           ▼                             │
+│    pack_to_int32(weight_int8, num_bits=3) ──→ safetensors (pack-quantized) │
+│    shape: [N, K*3/32]  dtype: int32          config.json: num_bits=3       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            INFERENCE (online)                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  vLLM model loading                                                         │
+│    reads config.json → quantization_config → num_bits=3, pack-quantized    │
+│                                                                             │
+│  Stage 1: --quantization humming                                            │
+│    HummingConfig → HummingLinearMethod                                      │
+│      .process_weights_after_loading():                                      │
+│        CompressedTensorsWeightSchema.convert_humming()                      │
+│          → unpack from CT layout (10 vals/int32, LSB-first)                │
+│          → repack to humming MMA layout (32 vals → 3 int32, interleaved)   │
+│        HummingMethod.transform_humming_layer()                              │
+│      .apply(): HummingKernel GEMM                                           │
+│                                                                             │
+│  Stage 2: --quantization compressed-tensors (or auto)                       │
+│    CompressedTensorsWNA16 → choose_mp_linear_kernel()                      │
+│      → HummingMPLinearKernel.can_implement() → True for sub-bit            │
+│      → same repack + forward path                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+</pre>
+
+<h2>4. Stage 1 — Explicit Humming Path</h2>
+<p><span class="stage s1">Stage 1</span> User invokes: <code>vllm serve model --quantization humming</code></p>
+
+<h3>4.1 Changes: compressed-tensors</h3>
+<table>
+<tr><th>File</th><th>Change</th><th>Risk</th></tr>
+<tr><td><code>compressors/pack_quantized/base.py</code></td><td>Relax <code>can_compress</code>: <code>num_bits in range(1, 9)</code></td><td>Low — only affects format selection, math already works</td></tr>
+<tr><td><code>quantization/quant_scheme.py</code></td><td>Add preset factories: <code>W{N}A16</code> for N=1–8 (symmetric INT, group_size=128)</td><td>Low — additive</td></tr>
+<tr><td><code>tests/</code></td><td>Add pack/unpack round-trip tests for 3-bit, 5-bit</td><td>None</td></tr>
+</table>
+
+<h3>4.2 Changes: llm-compressor</h3>
+<table>
+<tr><th>File</th><th>Change</th><th>Risk</th></tr>
+<tr><td>None expected</td><td>RTN, GPTQ, AutoRound modifiers already accept arbitrary <code>num_bits</code>. AWQ/SmoothQuant/SpinQuant are transform-only (bit-width agnostic). Preset string resolution comes from compressed-tensors.</td><td>—</td></tr>
+</table>
+
+<p><strong>Supported quantization modifiers for sub-bit:</strong></p>
+<table>
+<tr><th>Modifier</th><th>Sub-bit ready?</th><th>Notes</th></tr>
+<tr><td>RTN (basic PTQ)</td><td>Yes</td><td>Range math is <code>2**num_bits</code>, works for any N</td></tr>
+<tr><td>GPTQ</td><td>Yes</td><td>No bit-width restriction in quantization loop</td></tr>
+<tr><td>AutoRound</td><td>Yes</td><td>Natively supports sub-bit; integration effort is small</td></tr>
+<tr><td>AWQ (transform)</td><td>Yes</td><td>Only computes scales — delegates quantization to above modifiers</td></tr>
+<tr><td>SmoothQuant / SpinQuant / QuIP</td><td>Yes</td><td>Transform-only, bit-width agnostic</td></tr>
+</table>
+
+<h3>4.3 Changes: humming (if needed)</h3>
+<table>
+<tr><th>File</th><th>Change</th><th>Risk</th></tr>
+<tr><td><code>schema/compressed_tensors.py</code></td><td>Verify <code>convert_humming()</code> handles CT packed layout for non-4/8 bit. The pack_factor differs (10 for 3-bit, 6 for 5-bit).</td><td>Medium — may need fix if it assumes pack_factor=8</td></tr>
+</table>
+
+<h3>4.4 Changes: vLLM</h3>
+<table>
+<tr><th>File</th><th>Change</th><th>Risk</th></tr>
+<tr><td>None expected</td><td><code>HummingConfig</code> already reads compressed-tensors format and dispatches to humming. No gating on <code>num_bits</code> in this path.</td><td>Needs verification</td></tr>
+</table>
+
+<h3>4.5 Validation</h3>
+<ol>
+<li>Compress TinyLlama at 3-bit GPTQ with group_size=128</li>
+<li>Load with <code>vllm serve --quantization humming</code></li>
+<li>Generate text, verify no NaN/crash</li>
+<li>Measure perplexity, compare against 4-bit baseline (expect between 4-bit and 2-bit quality)</li>
+</ol>
+
+<h2>5. Stage 2 — Auto-Select via Kernel Framework</h2>
+<p><span class="stage s2">Stage 2</span> User invokes: <code>vllm serve model</code> (auto-detects, no flag needed)</p>
+
+<h3>5.1 New: <code>HummingMPLinearKernel</code></h3>
+<pre>
+# vllm/model_executor/kernels/linear/mixed_precision/humming_mp.py
+
+class HummingMPLinearKernel(MPLinearKernel):
+
+    @classmethod
+    def get_min_capability(cls) -> int:
+        return 75  # humming supports sm75+
+
+    @classmethod
+    def can_implement(cls, config: MPLinearLayerConfig) -> tuple[bool, str|None]:
+        # Accept any INT weight type with 1-8 bits
+        if config.weight_type.is_integer() and 1 <= config.weight_type.size_bits <= 8:
+            if config.group_size in [-1, 32, 64, 128, 256]:
+                return True, None
+        return False, "humming requires INT 1-8 bit weights"
+
+    def process_weights_after_loading(self, layer):
+        # Unpack from CT layout → repack to humming MMA layout
+        ...
+
+    def apply_weights(self, layer, x, bias):
+        # Call humming kernel forward
+        ...
+</pre>
+
+<h3>5.2 Register in Priority List</h3>
+<pre>
+# vllm/model_executor/kernels/linear/__init__.py  (_POSSIBLE_KERNELS)
+
+PlatformEnum.CUDA: [
+    CutlassW4A8LinearKernel,   # SM90, W4A8 only
+    MacheteLinearKernel,       # SM90, 4/8-bit
+    AllSparkLinearKernel,      # SM80, 8-bit
+    MarlinLinearKernel,        # SM75, 4/8-bit
+    HummingMPLinearKernel,     # SM75, 1-8 bit  ← NEW
+    ConchLinearKernel,         # SM80, 4/8-bit
+    ExllamaLinearKernel,       # SM60, 4/8-bit
+]
+</pre>
+
+<div class="callout">
+<strong>Priority placement rationale:</strong> Humming goes after Marlin so that for 4/8-bit, proven kernels are preferred. For 3/5/6/7-bit, Marlin/Machete/AllSpark all return <code>can_implement=False</code>, so humming auto-wins. If benchmarks show humming is faster than Marlin at 4-bit, promote it above Marlin later.
+</div>
+
+<h3>5.3 Extend WNA16 Scheme</h3>
+<pre>
+# compressed_tensors_wNa16.py
+
+WNA16_SUPPORTED_BITS = [2, 3, 4, 5, 6, 7, 8]
+WNA16_SUPPORTED_TYPES_MAP = {
+    2: scalar_types.uint2b4,
+    3: scalar_types.uint3b4,    # already defined in vllm/scalar_type.py
+    4: scalar_types.uint4b8,
+    5: scalar_types.uint5b16,   # may need to define
+    6: scalar_types.uint6b32,   # may need to define
+    7: scalar_types.uint7b64,   # may need to define
+    8: scalar_types.uint8b128,
+}
+</pre>
+
+<h3>5.4 Validation</h3>
+<ol>
+<li>Same model from Stage 1, now loaded without <code>--quantization humming</code></li>
+<li>Verify <code>choose_mp_linear_kernel()</code> selects <code>HummingMPLinearKernel</code></li>
+<li>Confirm identical output to Stage 1</li>
+<li>Benchmark latency vs Stage 1 path (should be identical — same kernel underneath)</li>
+</ol>
+
+<h2>6. UX Changes</h2>
+
+<h3>6.1 Compression (llm-compressor)</h3>
+<pre>
+# Before (only 4/8 worked):
+recipe = GPTQModifier(scheme="W4A16")
+
+# After Stage 1 — any bit-width, multiple algorithms:
+recipe = AutoRoundModifier(scheme="W3A16")     # AutoRound 3-bit (recommended first)
+recipe = GPTQModifier(scheme="W3A16")          # GPTQ 3-bit symmetric, group=128
+recipe = GPTQModifier(scheme="W5A16")          # GPTQ 5-bit symmetric, group=128
+recipe = QuantizationModifier(scheme="W3A16")  # RTN 3-bit (fastest, lower quality)
+
+# Combine with transforms (AWQ scaling + 3-bit quantization):
+recipe = [
+    AWQModifier(targets=["Linear"]),
+    GPTQModifier(scheme="W3A16"),
+]
+</pre>
+<p>Output: a standard HuggingFace checkpoint with <code>quantization_config.quantization_method = "compressed-tensors"</code> and <code>num_bits=3</code> in the config groups.</p>
+
+<h3>6.2 Inference (vLLM)</h3>
+
+<table>
+<tr><th>Stage</th><th>Command</th><th>Behavior</th></tr>
+<tr>
+<td><span class="stage s1">S1</span></td>
+<td><code>vllm serve ./my-3bit-model --quantization humming</code></td>
+<td>Explicit humming flag required. vLLM loads via HummingConfig path, repacks weights, runs humming kernel.</td>
+</tr>
+<tr>
+<td><span class="stage s2">S2</span></td>
+<td><code>vllm serve ./my-3bit-model</code></td>
+<td>Auto-detected. vLLM reads <code>compressed-tensors</code> config, CompressedTensorsWNA16 scheme selects HummingMPLinearKernel automatically (only kernel that supports sub-bit). No flag needed.</td>
+</tr>
+</table>
+
+<div class="callout warn">
+<strong>Backward compatibility:</strong> Existing 4-bit and 8-bit models are unaffected in both stages. Marlin/Machete remain the default kernels for those bit-widths. The <code>--quantization humming</code> flag continues to work as an explicit override for any bit-width.
+</div>
+
+<h3>6.3 Model Card / Config Output</h3>
+<pre>
+// config.json (generated by llm-compressor)
+{
+  "quantization_config": {
+    "quant_method": "compressed-tensors",
+    "quantization_status": "compressed",
+    "global_compression_ratio": 4.8,
+    "config_groups": {
+      "group_0": {
+        "weights": {
+          "num_bits": 3,
+          "type": "int",
+          "symmetric": true,
+          "strategy": "group",
+          "group_size": 128
+        },
+        "targets": ["Linear"]
+      }
+    },
+    "format": "pack-quantized"
+  }
+}
+</pre>
+
+<h2>7. Scope Summary</h2>
+
+<table>
+<tr><th>Repo</th><th>Stage 1 Scope</th><th>Stage 2 Scope</th></tr>
+<tr>
+<td><strong>compressed-tensors</strong></td>
+<td>
+• Relax <code>can_compress</code> (1 line)<br>
+• Add W{N}A16 preset schemes (N=1–8)<br>
+• Unit tests for sub-bit pack/unpack
+</td>
+<td>No additional changes</td>
+</tr>
+<tr>
+<td><strong>llm-compressor</strong></td>
+<td>
+• Verify GPTQ works at 3/5-bit (likely zero changes)<br>
+• Add example recipe for 3-bit GPTQ
+</td>
+<td>No additional changes</td>
+</tr>
+<tr>
+<td><strong>humming</strong></td>
+<td>
+• Verify/fix <code>convert_humming()</code> for non-4/8 pack_factor<br>
+• Add integration test
+</td>
+<td>No additional changes</td>
+</tr>
+<tr>
+<td><strong>vLLM</strong></td>
+<td>
+• Verify HummingConfig path works E2E (likely zero changes)
+</td>
+<td>
+• New <code>HummingMPLinearKernel</code> class (~100 lines)<br>
+• Extend <code>WNA16_SUPPORTED_BITS</code> to [2–8]<br>
+• Define missing scalar types (uint5, uint6, uint7)<br>
+• Register in <code>_POSSIBLE_KERNELS</code> priority list<br>
+• Integration tests
+</td>
+</tr>
+</table>
+
+<div class="callout">
+<strong>Estimated effort:</strong><br>
+Stage 1: ~2–3 days (mostly verification and one potential fix in humming)<br>
+Stage 2: ~3–5 days (new kernel wrapper, scalar types, testing)
+</div>
+
+<h2>8. Risk Assessment</h2>
+<table>
+<tr><th>Risk</th><th>Impact</th><th>Mitigation</th></tr>
+<tr><td>Humming's <code>convert_humming()</code> assumes 4/8-bit pack_factor</td><td>High — Stage 1 won't work</td><td>Test early; fix is localized to one function</td></tr>
+<tr><td>Scalar types for 5/6/7-bit not defined in vLLM</td><td>Medium — Stage 2 blocked</td><td>Define them; trivial addition to <code>scalar_type.py</code></td></tr>
+<tr><td>GPTQ at 3-bit may produce poor quality for some models</td><td>Low — not a code issue</td><td>Document recommended use cases (small models, non-critical layers)</td></tr>
+<tr><td>Humming kernel perf regression at odd bit-widths</td><td>Low — already tested by humming team</td><td>Run benchmarks as part of validation</td></tr>
+</table>
+
+<h2>9. Deliverables & Milestones</h2>
+<table>
+<tr><th>Milestone</th><th>Repos Touched</th><th>Outcome</th></tr>
+<tr><td><span class="stage s1">S1.1</span> CT packing unlocked</td><td>compressed-tensors</td><td>Can compress a model at 3-bit, save to disk</td></tr>
+<tr><td><span class="stage s1">S1.2</span> Humming loads sub-bit</td><td>humming (if fix needed)</td><td>convert_humming() handles 3/5-bit CT format</td></tr>
+<tr><td><span class="stage s1">S1.3</span> E2E with --quantization humming</td><td>vLLM (verify only)</td><td>Inference works, correct output</td></tr>
+<tr><td><span class="stage s2">S2.1</span> HummingMPLinearKernel</td><td>vLLM</td><td>New kernel registered in priority list</td></tr>
+<tr><td><span class="stage s2">S2.2</span> WNA16 extended</td><td>vLLM</td><td>Sub-bit auto-detected without --quantization flag</td></tr>
+<tr><td><span class="stage s2">S2.3</span> E2E auto path</td><td>vLLM</td><td>Same result without explicit humming flag</td></tr>
+</table>
+
+<h2>10. Open Questions</h2>
+<ol>
+<li>Does humming's <code>convert_humming()</code> correctly compute <code>pack_factor</code> for non-4/8 bits from the CT format? (Must verify before coding)</li>
+<li>Should we define <code>uint5b16</code>, <code>uint6b32</code>, <code>uint7b64</code> scalar types or use a generic representation?</li>
+<li>For Stage 2, should humming also compete at 4-bit (higher priority than Marlin) if benchmarks show it's faster?</li>
+</ol>
+
+</body>
+</html>

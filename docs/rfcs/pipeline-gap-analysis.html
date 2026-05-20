@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sub-Bit Quantization Pipeline – Gap Analysis</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; color: #e2e8f0; background: #0f172a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #3b82f6; padding-bottom: 8px; color: #f1f5f9; }
+  h2 { color: #60a5fa; margin-top: 2em; }
+  h3 { color: #cbd5e1; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #334155; padding: 8px 12px; text-align: left; }
+  th { background: #1e293b; font-weight: 600; color: #f1f5f9; }
+  tr:nth-child(even) { background: #1e293b; }
+  tr:nth-child(odd) { background: #0f172a; }
+  code { background: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #93c5fd; }
+  pre { background: #020617; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; border: 1px solid #1e293b; }
+  a { color: #60a5fa; }
+  strong { color: #f1f5f9; }
+  .status-ok { color: #4ade80; font-weight: bold; }
+  .status-gap { color: #f87171; font-weight: bold; }
+  .status-minor { color: #fbbf24; font-weight: bold; }
+  .tier { display: inline-block; background: #2563eb; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
+  .tier-2 { background: #7c3aed; }
+  .tier-3 { background: #059669; }
+  .insight { background: #1e293b; border-left: 4px solid #3b82f6; padding: 12px 16px; margin: 1em 0; border-radius: 0 8px 8px 0; }
+  .decision { background: #1c1917; border-left: 4px solid #f59e0b; padding: 12px 16px; margin: 1em 0; border-radius: 0 8px 8px 0; }
+</style>
+</head>
+<body>
+
+<h1>Sub-Bit (3/5/6/7-bit) Quantization Support</h1>
+<p><strong>Goal:</strong> Enable llm-compressor → compressed-tensors → vLLM+humming pipeline for arbitrary INT bit-widths (1–8).</p>
+<p><strong>Date:</strong> 2026-05-20</p>
+
+<h2>Pipeline Overview</h2>
+<pre>
+[llm-compressor]            [compressed-tensors]             [vLLM + humming]
+
+GPTQ/AWQ quantize   →   pack_to_int32 (N-bit)   →   save as "pack-quantized"
+(any num_bits)           shift-mask, LSB-first              ↓
+                         padded layout               load packed int32
+                                                            ↓
+                                                    HummingLinearMethod
+                                                    .process_weights_after_loading()
+                                                            ↓
+                                                    CompressedTensorsWeightSchema
+                                                    .convert_humming()
+                                                            ↓
+                                                    prepare_humming_weight()
+                                                    (repack: interleave + MMA layout)
+                                                            ↓
+                                                    HummingKernel GEMM
+</pre>
+
+<h2>Current Support Matrix</h2>
+<table>
+<tr><th>Component</th><th>Sub-bit Ready?</th><th>Key Constraint</th></tr>
+<tr><td>Humming kernels</td><td class="status-ok">✓ Full support (INT 1–8)</td><td>None — first-class support for all bit-widths</td></tr>
+<tr><td>compressed-tensors (math)</td><td class="status-ok">✓ Works for any N</td><td>pack/unpack shift-mask generalizes correctly</td></tr>
+<tr><td>compressed-tensors (gate)</td><td class="status-gap">✗ Blocked</td><td><code>can_compress</code> hard-codes <code>num_bits in (4, 8)</code></td></tr>
+<tr><td>compressed-tensors (schemes)</td><td class="status-gap">✗ Missing</td><td>No W3A16, W5A16, W6A16 presets defined</td></tr>
+<tr><td>llm-compressor</td><td class="status-ok">✓ Transparent</td><td>Passes num_bits through; GPTQ works for any bit-width</td></tr>
+<tr><td>vLLM (--quantization humming)</td><td class="status-minor">⚠ Likely works</td><td>HummingConfig reads compressed-tensors config directly; needs verification</td></tr>
+<tr><td>vLLM (--quantization compressed-tensors)</td><td class="status-gap">✗ Blocked</td><td><code>WNA16_SUPPORTED_BITS = [4, 8]</code>; Marlin/Machete don't support sub-bit</td></tr>
+</table>
+
+<h2>Layout Difference (Important)</h2>
+<div class="insight">
+<strong>compressed-tensors layout:</strong> Packs <code>32 // num_bits</code> values into <strong>one</strong> int32 (LSB-first, with wasted bits for non-divisors of 32).<br>
+<strong>humming layout:</strong> Packs <strong>32</strong> values into <code>num_bits</code> int32 words as a contiguous bitstream (no wasted bits).<br><br>
+<strong>This is already handled</strong> by humming's <code>convert_humming()</code> which unpacks from compressed-tensors format and repacks into MMA-optimized layout.
+</div>
+
+<h2>Gap Analysis</h2>
+<table>
+<tr><th>#</th><th>Component</th><th>Gap</th><th>Effort</th><th>Status</th></tr>
+<tr><td>1</td><td>compressed-tensors <code>base.py</code></td><td><code>can_compress</code> restricts to (4, 8)</td><td>1 line</td><td class="status-gap">Must fix</td></tr>
+<tr><td>2</td><td>compressed-tensors <code>quant_scheme.py</code></td><td>No WNA16 presets for N≠4,8</td><td>~20 lines</td><td class="status-gap">Must fix</td></tr>
+<tr><td>3</td><td>compressed-tensors <code>quant_args.py</code></td><td>INT path: no issue. FLOAT path: irrelevant for this task.</td><td>None</td><td class="status-ok">OK</td></tr>
+<tr><td>4</td><td>vLLM <code>WNA16_SUPPORTED_BITS</code></td><td>Only [4, 8] accepted</td><td>~10 lines</td><td class="status-minor">Only if default CT path needed</td></tr>
+<tr><td>5</td><td>vLLM kernel dispatch</td><td>Marlin/Machete can't do sub-bit</td><td>N/A</td><td class="status-minor">Bypassed via --quantization humming</td></tr>
+<tr><td>6</td><td>vLLM HummingConfig</td><td>Already reads compressed-tensors format + repacks</td><td>Verify</td><td class="status-ok">Likely OK</td></tr>
+<tr><td>7</td><td>Humming <code>convert_humming()</code></td><td>Must correctly handle CT packed layout for 3/5-bit</td><td>Verify</td><td class="status-minor">Needs testing</td></tr>
+</table>
+
+<h2>Recommended Work Plan</h2>
+
+<h3><span class="tier">Tier 1</span> compressed-tensors (Required)</h3>
+<ol>
+<li>Relax <code>can_compress</code> in <code>compressors/pack_quantized/base.py</code> to accept <code>num_bits in range(1, 9)</code></li>
+<li>Add generic WNA16 preset schemes: <code>W3A16</code>, <code>W5A16</code>, <code>W6A16</code>, <code>W7A16</code> (symmetric INT, group-128)</li>
+<li>Add unit tests for pack/unpack round-trip at 3-bit and 5-bit</li>
+</ol>
+
+<h3><span class="tier tier-2">Tier 2</span> vLLM Integration (Required)</h3>
+<ol>
+<li>Verify <code>HummingConfig</code> + <code>convert_humming()</code> handles 3/5-bit packed weights from compressed-tensors format</li>
+<li>If not working: fix the conversion in humming's <code>compressed_tensors.py</code> schema loader</li>
+<li>If working: no vLLM changes needed (user uses <code>--quantization humming</code>)</li>
+</ol>
+
+<h3><span class="tier tier-3">Tier 3</span> End-to-End Validation (Required)</h3>
+<ol>
+<li>Compress TinyLlama at 3-bit GPTQ via llm-compressor</li>
+<li>Load in vLLM with <code>--quantization humming</code></li>
+<li>Run inference, compare perplexity against FP16 baseline</li>
+</ol>
+
+<h2>Key Decision Point</h2>
+<div class="decision">
+<strong>Q: Should sub-bit work via <code>--quantization compressed-tensors</code> (default path)?</strong><br><br>
+If <strong>no</strong> (humming-only): Scope is minimal — just relax the guard + add presets in compressed-tensors. Users pass <code>--quantization humming</code>.<br><br>
+If <strong>yes</strong>: Requires extending vLLM's WNA16 scheme to route sub-bit widths to humming kernels (instead of Marlin). More invasive vLLM changes.<br><br>
+<strong>Recommendation:</strong> Start with humming-only path. The default compressed-tensors path can be added later as a follow-up.
+</div>
+
+<h2>Key Files</h2>
+<table>
+<tr><th>Repo</th><th>File</th><th>Purpose</th></tr>
+<tr><td>compressed-tensors</td><td><code>src/.../compressors/pack_quantized/base.py:128</code></td><td><code>can_compress</code> guard</td></tr>
+<tr><td>compressed-tensors</td><td><code>src/.../compressors/pack_quantized/helpers.py</code></td><td>pack/unpack int32 logic</td></tr>
+<tr><td>compressed-tensors</td><td><code>src/.../quantization/quant_scheme.py</code></td><td>Preset scheme definitions</td></tr>
+<tr><td>vLLM</td><td><code>vllm/.../quantization/humming.py</code></td><td>HummingConfig + linear method</td></tr>
+<tr><td>vLLM</td><td><code>vllm/.../quantization/utils/humming_utils.py</code></td><td>Weight preparation helpers</td></tr>
+<tr><td>humming</td><td><code>humming/schema/compressed_tensors.py</code></td><td>CT format → humming conversion</td></tr>
+<tr><td>humming</td><td><code>humming/ops/weight.py</code></td><td>pack/repack/unpack operations</td></tr>
+<tr><td>humming</td><td><code>humming/include/.../kernel/process.cuh</code></td><td>MMA-optimized repack kernel</td></tr>
+</table>
+
+</body>
+</html>
