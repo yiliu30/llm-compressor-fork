@@ -93,7 +93,11 @@ class Observer(InternalModule, RegistryMixin):
             global_absmax = torch.max(global_absmax, -stats["min_vals"].min())
             global_absmax = torch.max(global_absmax, stats["max_vals"].max())
 
-        return generate_gparam(-global_absmax.reshape(1), global_absmax.reshape(1))
+        return generate_gparam(
+            -global_absmax.reshape(1),
+            global_absmax.reshape(1),
+            quantization_args=self.args,
+        )
 
     @torch.no_grad
     def get_qparams(self) -> QParamsDict:
