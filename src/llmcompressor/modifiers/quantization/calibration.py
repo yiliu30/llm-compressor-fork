@@ -78,6 +78,16 @@ def initialize_observer(
         )
 
     if args is not None and args.dynamic is not True:
+        if observer is None:
+            # Schemes without a named observer (e.g. MXFP4/MXFP8/FP8_BLOCK
+            # weights) are memoryless: compute qparams directly from the
+            # weight data via a memoryless minmax observer. Without an
+            # observer, weight_scale would be left uninitialized and the
+            # quantized checkpoint would be garbage.
+            if base_name == "weight":
+                observer = "memoryless_minmax"
+            else:
+                return
         observer = Observer.load_from_registry(observer, base_name=base_name, args=args)
         module.register_module(f"{base_name}_observer", observer)
         observer.attach(module)
