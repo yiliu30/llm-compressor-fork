@@ -20,6 +20,8 @@ from llmcompressor.utils.triton_utils import (
     calculate_observer_error,
     observer_triton_req,
     quantize_dequantize,
+    round_to_bf16,
+    round_to_fp16,
     scale_round_config,
 )
 
@@ -349,6 +351,7 @@ def _grid_search_observer_triton(
             SYMMETRIC=args.symmetric,
             SCALE_ROUND_TYPE=scale_round_type,
             OBSERVED_DTYPE=observed_dtype,
+            XPU=observed.is_xpu,
         )
     else:
         num_chunks = triton.cdiv(total_values, tile_values)
@@ -386,6 +389,7 @@ def _grid_search_observer_triton(
             SYMMETRIC=args.symmetric,
             SCALE_ROUND_TYPE=scale_round_type,
             OBSERVED_DTYPE=observed_dtype,
+            XPU=observed.is_xpu,
         )
         _grid_search_observer_triton_split_reduce_kernel[(num_qparams,)](
             partial_errors,
@@ -432,6 +436,7 @@ def _grid_search_observer_triton_packed_kernel(
     SYMMETRIC: tl.constexpr,
     SCALE_ROUND_TYPE: tl.constexpr,
     OBSERVED_DTYPE: tl.constexpr,
+    XPU: tl.constexpr,
 ):
     """Pack complete qparams so each program handles about 512 values."""
     tile_offsets = tl.arange(0, TILE_QPARAMS)
@@ -466,12 +471,10 @@ def _grid_search_observer_triton_packed_kernel(
         ).to(tl.float32)
     else:
         importance = 0.0
-    if OBSERVED_DTYPE == 1:
-        best_error = tl.full((TILE_QPARAMS,), float("inf"), tl.float16)
-    elif OBSERVED_DTYPE == 2:
-        best_error = tl.full((TILE_QPARAMS,), float("inf"), tl.bfloat16)
-    else:
-        best_error = tl.full((TILE_QPARAMS,), float("inf"), tl.float32)
+    # Keep loop-carried state in FP32. XPU Triton corrupts packed BF16 values
+    # carried across loop iterations; rounding below preserves comparison
+    # semantics for FP16/BF16 observers.
+    best_error = tl.full((TILE_QPARAMS,), float("inf"), tl.float32)
     best_step = tl.zeros((TILE_QPARAMS,), tl.int32)
     stale = tl.zeros((TILE_QPARAMS,), tl.int32)
 
@@ -515,6 +518,7 @@ def _grid_search_observer_triton_packed_kernel(
                 NUM_BITS=NUM_BITS,
                 HAS_ZP=HAS_ZP,
                 COMPUTE_DTYPE=OBSERVED_DTYPE,
+                XPU=XPU,
             )
             diff_pow = calculate_observer_error(
                 values,
@@ -524,6 +528,7 @@ def _grid_search_observer_triton_packed_kernel(
                 HAS_IMPORTANCE=HAS_IMPORTANCE,
                 COMPUTE_DTYPE=OBSERVED_DTYPE,
                 ROUND_ERROR=True,
+                XPU=XPU,
             )
             if HAS_IMPORTANCE and BLOCK_VALUES == 16:
                 # Match eager's CUDA reduction tree for a packed NVFP4 group:
@@ -543,11 +548,21 @@ def _grid_search_observer_triton_packed_kernel(
                     tl.reshape(error_terms, (TILE_QPARAMS, 2, BLOCK_VALUES // 8)),
                     axis=1,
                 )
-                error = tl.sum(error_terms, axis=1).to(best_error.dtype)
+                error = tl.sum(error_terms, axis=1).to(tl.float32)
             else:
                 error = tl.sum(
                     tl.where(value_mask, diff_pow, 0.0).to(tl.float32), axis=1
-                ).to(best_error.dtype)
+                ).to(tl.float32)
+            if OBSERVED_DTYPE == 1:
+                if XPU:
+                    error = round_to_fp16(error)
+                else:
+                    error = error.to(tl.float16).to(tl.float32)
+            elif OBSERVED_DTYPE == 2:
+                if XPU:
+                    error = round_to_bf16(error)
+                else:
+                    error = error.to(tl.bfloat16).to(tl.float32)
             previous_best = best_error
             is_better = active & (error < previous_best)
             best_error = tl.where(is_better, error, best_error)
@@ -590,6 +605,7 @@ def _grid_search_observer_triton_split_kernel(
     SYMMETRIC: tl.constexpr,
     SCALE_ROUND_TYPE: tl.constexpr,
     OBSERVED_DTYPE: tl.constexpr,
+    XPU: tl.constexpr,
 ):
     """Compute every candidate's partial error for one 512-value qparam chunk."""
     pid = tl.program_id(0)
@@ -646,6 +662,7 @@ def _grid_search_observer_triton_split_kernel(
             NUM_BITS=NUM_BITS,
             HAS_ZP=HAS_ZP,
             COMPUTE_DTYPE=OBSERVED_DTYPE,
+            XPU=XPU,
         )
         diff_pow = calculate_observer_error(
             values,
@@ -655,6 +672,7 @@ def _grid_search_observer_triton_split_kernel(
             HAS_IMPORTANCE=HAS_IMPORTANCE,
             COMPUTE_DTYPE=OBSERVED_DTYPE,
             ROUND_ERROR=False,
+            XPU=XPU,
         )
         error = tl.sum(tl.where(value_mask, diff_pow, 0.0))
         tl.store(
