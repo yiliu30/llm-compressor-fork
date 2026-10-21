@@ -561,7 +561,6 @@ def _assert_imatrix_eager_triton_parity(
     assert torch.equal(qdq_weights[0], qdq_weights[1])
 
 
-@pytest.mark.skipif(not torch.accelerator.is_available(), reason="requires CUDA Triton")
 @pytest.mark.parametrize(
     "preset,observed_shape,maxshrink,patience,grid,expand",
     [
@@ -577,19 +576,24 @@ def _assert_imatrix_eager_triton_parity(
         ),
     ],
 )
+@pytest.mark.parametrize("device", ["cuda", "xpu"])
 def test_imatrix_triton_matches_eager_for_realistic_schemes(
-    preset, observed_shape, maxshrink, patience, grid, expand
+    preset, observed_shape, maxshrink, patience, grid, expand, device
 ):
     """Real W4A16 and NVFP4A16 group sizes preserve eager qparams and QDQ."""
+    device_module = getattr(torch, device, None)
+    if device_module is None or not device_module.is_available():
+        pytest.skip(f"{device} is not available")
+
     args = preset_name_to_scheme(preset, ["Linear"]).weights
     torch.manual_seed(0)
     observed = flatten_for_calibration(
-        torch.randn(*observed_shape, device="cuda", dtype=torch.bfloat16),
+        torch.randn(*observed_shape, device=device, dtype=torch.bfloat16),
         "weight",
         args,
     )
     importance = flatten_for_calibration(
-        torch.linspace(0.2, 2.0, observed_shape[-1], device="cuda")
+        torch.linspace(0.2, 2.0, observed_shape[-1], device=device)
         .unsqueeze(0)
         .expand(*observed_shape),
         "weight",
@@ -609,9 +613,13 @@ def test_imatrix_triton_matches_eager_for_realistic_schemes(
     )
 
 
-@pytest.mark.skipif(not torch.accelerator.is_available(), reason="requires CUDA Triton")
-def test_imatrix_nvfp4_bf16_reduction_tie_matches_eager():
+@pytest.mark.parametrize("device", ["cuda", "xpu"])
+def test_imatrix_nvfp4_bf16_reduction_tie_matches_eager(device):
     """A Llama-derived BF16 near-tie chooses the same NVFP4 grid point."""
+    device_module = getattr(torch, device, None)
+    if device_module is None or not device_module.is_available():
+        pytest.skip(f"{device} is not available")
+
     args = preset_name_to_scheme("NVFP4A16", ["Linear"]).weights
     observed = torch.tensor(
         [
@@ -632,7 +640,7 @@ def test_imatrix_nvfp4_bf16_reduction_tie_matches_eager():
             0.0133056640625,
             -0.00174713134765625,
         ],
-        device="cuda",
+        device=device,
         dtype=torch.bfloat16,
     ).reshape(1, 1, 1, 16)
     importance = torch.tensor(
@@ -654,7 +662,7 @@ def test_imatrix_nvfp4_bf16_reduction_tie_matches_eager():
             0.007513321004807949,
             0.0026003867387771606,
         ],
-        device="cuda",
+        device=device,
         dtype=torch.float32,
     ).reshape(1, 1, 1, 16)
     _assert_imatrix_eager_triton_parity(
@@ -670,9 +678,13 @@ def test_imatrix_nvfp4_bf16_reduction_tie_matches_eager():
     )
 
 
-@pytest.mark.skipif(not torch.accelerator.is_available(), reason="requires CUDA Triton")
-def test_imatrix_nvfp4_bf16_power_rounding_tie_matches_eager():
+@pytest.mark.parametrize("device", ["cuda", "xpu"])
+def test_imatrix_nvfp4_bf16_power_rounding_tie_matches_eager(device):
     """Match eager when a weighted cubic error lands on a BF16 rounding tie."""
+    device_module = getattr(torch, device, None)
+    if device_module is None or not device_module.is_available():
+        pytest.skip(f"{device} is not available")
+
     args = preset_name_to_scheme("NVFP4A16", ["Linear"]).weights
     observed = torch.tensor(
         [
@@ -693,7 +705,7 @@ def test_imatrix_nvfp4_bf16_power_rounding_tie_matches_eager():
             0.006927490234375,
             0.01318359375,
         ],
-        device="cuda",
+        device=device,
         dtype=torch.bfloat16,
     ).reshape(1, 1, 1, 16)
     importance = torch.tensor(
@@ -715,7 +727,7 @@ def test_imatrix_nvfp4_bf16_power_rounding_tie_matches_eager():
             0.010342647321522236,
             0.0010723379673436284,
         ],
-        device="cuda",
+        device=device,
         dtype=torch.float32,
     ).reshape(1, 1, 1, 16)
     _assert_imatrix_eager_triton_parity(
