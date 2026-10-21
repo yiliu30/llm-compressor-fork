@@ -23,6 +23,8 @@ from llmcompressor.utils.triton_utils import (
     calculate_observer_error,
     observer_triton_req,
     quantize_dequantize,
+    round_to_bf16,
+    round_to_fp16,
     scale_round_config,
 )
 
@@ -547,12 +549,10 @@ def _grid_search_observer_triton_packed_kernel(
         ).to(tl.float32)
     else:
         group_absmax = tl.zeros((TILE_QPARAMS,), tl.float32)
-    if OBSERVED_DTYPE == 1:
-        best_error = tl.full((TILE_QPARAMS,), float("inf"), tl.float16)
-    elif OBSERVED_DTYPE == 2:
-        best_error = tl.full((TILE_QPARAMS,), float("inf"), tl.bfloat16)
-    else:
-        best_error = tl.full((TILE_QPARAMS,), float("inf"), tl.float32)
+    # Keep loop-carried state in FP32. XPU Triton corrupts packed BF16 values
+    # carried across loop iterations; rounding below preserves comparison
+    # semantics for FP16/BF16 observers.
+    best_error = tl.full((TILE_QPARAMS,), float("inf"), tl.float32)
     best_step = tl.zeros((TILE_QPARAMS,), tl.int32)
     stale = tl.zeros((TILE_QPARAMS,), tl.int32)
 
@@ -626,11 +626,15 @@ def _grid_search_observer_triton_packed_kernel(
                     tl.reshape(error_terms, (TILE_QPARAMS, 2, BLOCK_VALUES // 8)),
                     axis=1,
                 )
-                error = tl.sum(error_terms, axis=1).to(best_error.dtype)
+                error = tl.sum(error_terms, axis=1).to(tl.float32)
             else:
                 error = tl.sum(
                     tl.where(value_mask, diff_pow, 0.0).to(tl.float32), axis=1
-                ).to(best_error.dtype)
+                ).to(tl.float32)
+            if OBSERVED_DTYPE == 1:
+                error = round_to_fp16(error)
+            elif OBSERVED_DTYPE == 2:
+                error = round_to_bf16(error)
             previous_best = best_error
             is_better = active & (error < previous_best)
             best_error = tl.where(is_better, error, best_error)
